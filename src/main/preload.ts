@@ -4,6 +4,9 @@ import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import { AgentIpcChannel } from '../shared/agent/constants';
 import { AppUpdateIpc } from '../shared/appUpdate/constants';
 import { ArtifactPreviewIpc } from '../shared/artifactPreview/constants';
+import { ClipboardIpc } from '../shared/clipboard/constants';
+import type { ListLocalWebServicesOptions, LocalWebService } from '../shared/localWebServices/constants';
+import { LocalWebServicesIpc } from '../shared/localWebServices/constants';
 import type { Platform } from '../shared/platform';
 import { NimQrLoginIpc } from './ipcHandlers/nimQrLogin';
 import { OpenClawSessionIpc } from './openclawSession/constants';
@@ -398,7 +401,9 @@ contextBridge.exposeInMainWorld('electron', {
   },
   clipboard: {
     writeImageFromFile: (filePath: string) =>
-      ipcRenderer.invoke('clipboard:writeImageFromFile', filePath),
+      ipcRenderer.invoke(ClipboardIpc.WriteImageFromFile, filePath),
+    writeImageFromDataUrl: (dataUrl: string) =>
+      ipcRenderer.invoke(ClipboardIpc.WriteImageFromDataUrl, dataUrl),
   },
   voice: {
     triggerDictation: () => ipcRenderer.invoke('voice:triggerDictation'),
@@ -414,6 +419,22 @@ contextBridge.exposeInMainWorld('electron', {
     createPreviewSession: (filePath: string) => ipcRenderer.invoke(ArtifactPreviewIpc.CreateSession, filePath),
     createOfficePreviewSession: (filePath: string) => ipcRenderer.invoke(ArtifactPreviewIpc.CreateOfficeSession, filePath),
     destroyPreviewSession: (sessionId: string) => ipcRenderer.invoke(ArtifactPreviewIpc.DestroySession, sessionId),
+    clearBrowserCookies: async () => {
+      try {
+        return await ipcRenderer.invoke(ArtifactPreviewIpc.ClearBrowserCookies);
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    clearBrowserCache: async () => {
+      try {
+        return await ipcRenderer.invoke(ArtifactPreviewIpc.ClearBrowserCache);
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    listLocalWebServices: (options?: ListLocalWebServicesOptions) =>
+      ipcRenderer.invoke(LocalWebServicesIpc.List, options) as Promise<LocalWebService[]>,
   },
   autoLaunch: {
     get: () => ipcRenderer.invoke('app:getAutoLaunch'),
