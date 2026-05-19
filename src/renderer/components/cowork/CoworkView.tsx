@@ -68,8 +68,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   // Listen for subagent selection events from sidebar
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<SubagentSessionSummary>).detail;
-      if (detail) setViewingSubagent(detail);
+      const detail = (event as CustomEvent<SubagentSessionSummary | null>).detail;
+      setViewingSubagent(detail ?? null);
     };
     window.addEventListener(CoworkUiEvent.SelectSubagent, handler);
     return () => window.removeEventListener(CoworkUiEvent.SelectSubagent, handler);

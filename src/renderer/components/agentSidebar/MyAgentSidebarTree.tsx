@@ -70,6 +70,8 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
       await coworkService.loadSessions(task.agentId);
     }
     onShowCowork();
+    // Clear subagent detail view so the main session detail is shown
+    window.dispatchEvent(new CustomEvent(CoworkUiEvent.SelectSubagent, { detail: null }));
     return coworkService.loadSession(task.id);
   };
 

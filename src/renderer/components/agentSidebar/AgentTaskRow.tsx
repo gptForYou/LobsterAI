@@ -185,7 +185,7 @@ const AgentTaskRow: React.FC<AgentTaskRowProps> = ({
         isSelectionDisabled
           ? 'cursor-default text-foreground/30'
           : task.isSelected
-          ? 'bg-black/[0.06] text-foreground dark:bg-white/[0.07]'
+          ? 'cursor-pointer bg-black/[0.06] text-foreground dark:bg-white/[0.07]'
           : 'cursor-pointer text-foreground/80 hover:bg-black/[0.03] hover:text-foreground dark:hover:bg-white/[0.04]'
       }`}
       onClick={handleRowClick}
