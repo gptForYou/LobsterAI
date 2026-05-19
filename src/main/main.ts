@@ -3582,6 +3582,37 @@ if (!gotTheLock) {
     }
   });
 
+  // ── Subagent tracking IPC ──────────────────────────────────────────────
+
+  ipcMain.handle('cowork:subTask:status', async (_event, sessionId?: string) => {
+    if (!openClawRuntimeAdapter) return { success: true, statuses: {} };
+    const statuses = openClawRuntimeAdapter.getSubagentStatuses(sessionId);
+    return { success: true, statuses };
+  });
+
+  ipcMain.handle('cowork:subTask:history', async (_event, options: {
+    parentSessionId: string;
+    agentId: string;
+    sessionKey?: string;
+  }) => {
+    if (!openClawRuntimeAdapter) {
+      return { success: false, error: 'Runtime adapter not available' };
+    }
+    try {
+      const messages = await openClawRuntimeAdapter.getSubTaskHistory(
+        options.parentSessionId,
+        options.agentId,
+        options.sessionKey,
+      );
+      return { success: true, messages };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to fetch subagent history',
+      };
+    }
+  });
+
   ipcMain.handle('cowork:permission:respond', async (_event, options: {
     requestId: string;
     result: PermissionResult;

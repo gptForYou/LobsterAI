@@ -60,6 +60,7 @@ import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInpu
 import DiffView, { extractDiffFromToolInput } from './DiffView';
 import ImagePreviewModal, { type ImagePreviewSource } from './ImagePreviewModal';
 import LazyRenderTurn, { clearHeightCache } from './LazyRenderTurn';
+import SubagentInlineView from './SubagentInlineView';
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;
   onContinue: (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[]) => boolean | void | Promise<boolean | void>;
@@ -400,6 +401,8 @@ const getToolDisplayName = (toolName: string | undefined): string => {
       return 'MultiEdit';
     case 'process':
       return 'Process';
+    case 'sessionsspawn':
+      return 'Subagent';
     default:
       return toolName;
   }
@@ -444,6 +447,11 @@ const isTodoWriteToolName = (toolName: string | undefined): boolean => {
 const isCronToolName = (toolName: string | undefined): boolean => {
   if (!toolName) return false;
   return normalizeToolName(toolName) === 'cron';
+};
+
+const isSessionsSpawnToolName = (toolName: string | undefined): boolean => {
+  if (!toolName) return false;
+  return normalizeToolName(toolName) === 'sessionsspawn';
 };
 
 const getCronToolSummary = (input: Record<string, unknown>): string | null => {
@@ -597,6 +605,11 @@ const getToolInputSummary = (
       const sessionId = getToolInputString(input, ['sessionId', 'session_id']);
       if (action && sessionId) return `${action} · ${sessionId}`;
       return action ?? sessionId;
+    }
+    case 'sessionsspawn': {
+      const spawnAgent = getToolInputString(input, ['agentId', 'agent_id']);
+      const spawnTask = getToolInputString(input, ['task']);
+      return [spawnAgent, spawnTask ? truncatePreview(spawnTask) : null].filter(Boolean).join(' · ');
     }
     default:
       return null;
@@ -962,7 +975,54 @@ const ToolCallGroup: React.FC<{
   const showNoDetailError = isToolError && !hasToolResultText;
   const toolResultFallback = showNoDetailError ? i18nService.t('coworkToolNoErrorDetail') : '';
   const displayToolResult = hasToolResultText ? toolResultDisplay : toolResultFallback;
-  const [isExpanded, setIsExpanded] = useState(false);
+  const isSessionsSpawn = isSessionsSpawnToolName(rawToolName);
+
+  // Extract subagent identifier — agentId from toolInput may be absent (optional param),
+  // so fall back to taskName, or extract from childSessionKey in tool result, or use toolCallId.
+  const spawnIdentifier = useMemo(() => {
+    if (!isSessionsSpawn) return '';
+    const input = toolInput as Record<string, unknown> | undefined;
+    if (typeof input?.agentId === 'string' && input.agentId) return input.agentId;
+    if (typeof input?.taskName === 'string' && input.taskName) return input.taskName;
+    // Extract from tool result JSON: { childSessionKey: "agent:main:subagent:UUID" }
+    if (toolResult) {
+      const resultText = typeof toolResult.content === 'string' ? toolResult.content
+        : typeof toolResult.metadata?.toolResult === 'string' ? toolResult.metadata.toolResult : '';
+      try {
+        const parsed = JSON.parse(resultText);
+        if (typeof parsed?.childSessionKey === 'string') {
+          // Extract the subagent UUID or agentId portion from the key
+          const keyMatch = parsed.childSessionKey.match(/subagent:([^:]+)/);
+          if (keyMatch) return keyMatch[1];
+          return parsed.childSessionKey;
+        }
+      } catch { /* not JSON, try regex on raw text */ }
+      const keyMatch = resultText.match(/subagent:([0-9a-f-]{36})/i);
+      if (keyMatch) return keyMatch[1];
+    }
+    // Last resort: use toolCallId as unique identifier
+    return typeof toolUse.metadata?.toolUseId === 'string' ? toolUse.metadata.toolUseId : '';
+  }, [isSessionsSpawn, toolInput, toolResult, toolUse.metadata?.toolUseId]);
+
+  // Extract childSessionKey from tool result for direct history fetch
+  const spawnSessionKey = useMemo(() => {
+    if (!isSessionsSpawn || !toolResult) return undefined;
+    const resultText = typeof toolResult.content === 'string' ? toolResult.content
+      : typeof toolResult.metadata?.toolResult === 'string' ? toolResult.metadata.toolResult : '';
+    try {
+      const parsed = JSON.parse(resultText);
+      if (typeof parsed?.childSessionKey === 'string') return parsed.childSessionKey;
+    } catch { /* not JSON */ }
+    // Try to extract from raw text
+    const match = resultText.match(/(agent:[^\s,}"]+)/);
+    return match ? match[1] : undefined;
+  }, [isSessionsSpawn, toolResult]);
+
+  const spawnTask = isSessionsSpawn
+    ? (typeof (toolInput as Record<string, unknown> | undefined)?.task === 'string'
+      ? (toolInput as Record<string, unknown>).task as string : '')
+    : '';
+  const [isExpanded, setIsExpanded] = useState(isSessionsSpawn);
   const resultLineCount = hasToolResultText ? getToolResultLineCount(toolResultDisplay) : 0;
   const toolResultSummary = isCronTool && hasToolResultText
     ? truncatePreview(toolResultDisplay.replace(/\s+/g, ' '))
@@ -1096,6 +1156,8 @@ const ToolCallGroup: React.FC<{
                 </div>
               )}
             </div>
+          ) : isSessionsSpawn && spawnIdentifier ? (
+            <SubagentInlineView agentId={spawnIdentifier} task={spawnTask} sessionKey={spawnSessionKey} />
           ) : (
             // Standard display for other tools with input/output labels
             <div className="space-y-2">

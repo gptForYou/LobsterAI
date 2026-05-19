@@ -517,6 +517,20 @@ interface IElectronAPI {
       defaultFileName?: string;
       fileExtension?: string;
     }) => Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
+    getSubTaskStatus: (sessionId?: string) => Promise<{
+      success: boolean;
+      statuses?: Record<string, 'running' | 'done'>;
+      error?: string;
+    }>;
+    getSubTaskHistory: (options: {
+      parentSessionId: string;
+      agentId: string;
+      sessionKey?: string;
+    }) => Promise<{
+      success: boolean;
+      messages?: Array<{ role: string; content: string }>;
+      error?: string;
+    }>;
     respondToPermission: (options: {
       requestId: string;
       result: CoworkPermissionResult;
