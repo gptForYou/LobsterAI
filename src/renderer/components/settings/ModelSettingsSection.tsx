@@ -133,6 +133,8 @@ export interface ModelSettingsSectionProps {
   setNewModelSupportsImage: (v: boolean) => void;
   newModelContextWindow: number | undefined;
   setNewModelContextWindow: (v: number | undefined) => void;
+  newModelCustomParams: string;
+  setNewModelCustomParams: (v: string) => void;
   modelFormError: string | null;
   setModelFormError: (v: string | null) => void;
   importInputRef: React.RefObject<HTMLInputElement>;
@@ -158,7 +160,7 @@ export interface ModelSettingsSectionProps {
   handleCopilotCancelAuth: () => void;
   handleTestConnection: () => void;
   handleAddModel: () => void;
-  handleEditModel: (modelId: string, modelName: string, supportsImage?: boolean, contextWindow?: number) => void;
+  handleEditModel: (modelId: string, modelName: string, supportsImage?: boolean, contextWindow?: number, customParams?: Record<string, unknown>) => void;
   handleDeleteModel: (modelId: string) => void;
   handleSaveNewModel: () => void;
   handleCancelModelEdit: () => void;
@@ -179,6 +181,7 @@ const ModelSettingsSection: React.FC<ModelSettingsSectionProps> = ({
   newModelName, setNewModelName, newModelId, setNewModelId,
   newModelSupportsImage, setNewModelSupportsImage,
   newModelContextWindow, setNewModelContextWindow,
+  newModelCustomParams, setNewModelCustomParams,
   modelFormError, setModelFormError,
   importInputRef,
   handleImportProvidersClick, handleExportProviders, handleImportProviders,
@@ -1358,7 +1361,7 @@ const ModelSettingsSection: React.FC<ModelSettingsSectionProps> = ({
                           )}
                           <button
                             type="button"
-                            onClick={() => handleEditModel(model.id, model.name, model.supportsImage, model.contextWindow)}
+                            onClick={() => handleEditModel(model.id, model.name, model.supportsImage, model.contextWindow, model.customParams)}
                             className="p-0.5 text-secondary hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
                           >
                             <PencilIcon className="h-3.5 w-3.5" />
@@ -1699,6 +1702,24 @@ const ModelSettingsSection: React.FC<ModelSettingsSectionProps> = ({
                       </div>
                       <p className="mt-1 text-[11px] text-muted">
                         {i18nService.t('contextWindowHint')}
+                      </p>
+                    </div>
+                  </div>
+                  {/* Custom Params */}
+                  <div className="flex items-start gap-3">
+                    <label className="w-24 shrink-0 text-xs font-medium text-secondary pt-2 text-right">
+                      {i18nService.t('customParams')}
+                    </label>
+                    <div className="flex-1 min-w-0">
+                      <textarea
+                        value={newModelCustomParams}
+                        onChange={(e) => setNewModelCustomParams(e.target.value)}
+                        placeholder={'{\n  "reasoning_effort": "high"\n}'}
+                        rows={3}
+                        className="w-full rounded-lg bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-2.5 py-1.5 text-xs font-mono resize-y"
+                      />
+                      <p className="mt-1 text-[11px] text-muted">
+                        {i18nService.t('customParamsHint')}
                       </p>
                     </div>
                   </div>

@@ -568,7 +568,7 @@ interface IElectronAPI {
       content: string,
     ) => Promise<{ success: boolean; error?: string }>;
     onStreamMessage: (
-      callback: (data: { sessionId: string; message: CoworkMessage }) => void,
+      callback: (data: { sessionId: string; message: CoworkMessage; beforeMessageId?: string }) => void,
     ) => () => void;
     onStreamMessageUpdate: (
       callback: (data: { sessionId: string; messageId: string; content: string; metadata?: Record<string, unknown> }) => void,

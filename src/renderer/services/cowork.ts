@@ -109,7 +109,7 @@ class CoworkService {
     this.cleanupListeners();
 
     // Message listener - also check if session exists (for IM-created sessions)
-    const messageCleanup = cowork.onStreamMessage(async ({ sessionId, message }) => {
+    const messageCleanup = cowork.onStreamMessage(async ({ sessionId, message, beforeMessageId }) => {
       // Debug: log user messages to check if imageAttachments are preserved
       if (message.type === 'user') {
         const meta = message.metadata as Record<string, unknown> | undefined;
@@ -141,7 +141,10 @@ class CoworkService {
       if (message.type === 'user' || message.type === 'assistant' || message.type === 'tool_use' || message.type === 'tool_result') {
         store.dispatch(updateSessionStatus({ sessionId, status: 'running' }));
       }
-      store.dispatch(addMessage({ sessionId, message }));
+      if (beforeMessageId) {
+        console.log('[ThinkingOrder] renderer received message with beforeMessageId=', beforeMessageId, 'messageId=', message.id, 'isThinking=', !!(message.metadata as any)?.isThinking);
+      }
+      store.dispatch(addMessage({ sessionId, message, beforeMessageId }));
       this.scheduleContextUsageRefresh(sessionId, true);
     });
     this.streamListenerCleanups.push(messageCleanup);

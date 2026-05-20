@@ -1432,17 +1432,20 @@ const bindCoworkRuntimeForwarder = (): void => {
   if (coworkRuntimeForwarderBound) return;
   const runtime = getCoworkEngineRouter();
 
-  runtime.on('message', (sessionId: string, message: unknown) => {
+  runtime.on('message', (sessionId: string, message: unknown, beforeMessageId?: string) => {
     const safeMessage = sanitizeCoworkMessageForIpc(message);
     const windows = BrowserWindow.getAllWindows();
     const messageType = typeof message === 'object' && message && 'type' in message
       ? (message as { type?: unknown }).type
       : undefined;
+    if (beforeMessageId) {
+      console.log('[ThinkingOrder] IPC forwarding with beforeMessageId=', beforeMessageId, 'type=', messageType);
+    }
     console.log('[CoworkForwarder] forwarding message: sessionId=', sessionId, 'type=', messageType, 'windowCount=', windows.length);
     windows.forEach((win) => {
       if (win.isDestroyed()) return;
       try {
-        win.webContents.send('cowork:stream:message', { sessionId, message: safeMessage });
+        win.webContents.send('cowork:stream:message', { sessionId, message: safeMessage, beforeMessageId });
       } catch (error) {
         console.error('Failed to forward cowork message:', error);
       }

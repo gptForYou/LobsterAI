@@ -2,6 +2,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   DocumentArrowDownIcon,
+  LightBulbIcon,
   PhotoIcon,
 } from '@heroicons/react/24/outline';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo,useRef, useState } from 'react';
@@ -959,7 +960,7 @@ const isRenderableAssistantOrSystemMessage = (message: CoworkMessage): boolean =
     return true;
   }
   if (message.metadata?.isThinking) {
-    return Boolean(message.metadata?.isStreaming);
+    return true;  // Always show thinking blocks (collapsed when not streaming)
   }
   return false;
 };
@@ -1581,26 +1582,27 @@ const ThinkingBlock: React.FC<{
   }, [isCurrentlyStreaming]);
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden">
+    <div className="rounded-lg border border-border bg-surface-sunken/50 overflow-hidden">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-raised transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-raised/50 transition-colors"
       >
-        <ChevronRightIcon
-          className={`h-3.5 w-3.5 text-secondary flex-shrink-0 transition-transform duration-200 ${
-            isExpanded ? 'rotate-90' : ''
-          }`}
-        />
+        <LightBulbIcon className="h-3.5 w-3.5 text-secondary flex-shrink-0" />
         <span className="text-xs font-medium text-secondary">
           {i18nService.t('reasoning')}
         </span>
         {isCurrentlyStreaming && (
           <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
         )}
+        <ChevronRightIcon
+          className={`h-3 w-3 text-secondary/60 flex-shrink-0 ml-auto transition-transform duration-200 ${
+            isExpanded ? 'rotate-90' : ''
+          }`}
+        />
       </button>
       {isExpanded && (
-        <div className="px-3 pb-3 max-h-64 overflow-y-auto">
-          <div className="text-xs leading-relaxed text-muted whitespace-pre-wrap">
+        <div className="px-3 pb-3 max-h-[300px] overflow-y-auto border-t border-border/50">
+          <div className="text-xs leading-relaxed text-muted whitespace-pre-wrap pt-2">
             {displayContent}
           </div>
         </div>

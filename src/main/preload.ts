@@ -314,8 +314,8 @@ contextBridge.exposeInMainWorld('electron', {
     writeBootstrapFile: (filename: string, content: string) =>
       ipcRenderer.invoke('cowork:bootstrap:write', filename, content),
     // Stream event listeners
-    onStreamMessage: (callback: (data: { sessionId: string; message: any }) => void) => {
-      const handler = (_event: any, data: { sessionId: string; message: any }) => callback(data);
+    onStreamMessage: (callback: (data: { sessionId: string; message: any; beforeMessageId?: string }) => void) => {
+      const handler = (_event: any, data: { sessionId: string; message: any; beforeMessageId?: string }) => callback(data);
       ipcRenderer.on('cowork:stream:message', handler);
       return () => ipcRenderer.removeListener('cowork:stream:message', handler);
     },

@@ -496,6 +496,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [newModelId, setNewModelId] = useState('');
   const [newModelSupportsImage, setNewModelSupportsImage] = useState(false);
   const [newModelContextWindow, setNewModelContextWindow] = useState<number | undefined>(undefined);
+  const [newModelCustomParams, setNewModelCustomParams] = useState<string>('');
   const [modelFormError, setModelFormError] = useState<string | null>(null);
 
   // About tab
@@ -1893,10 +1894,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setNewModelId('');
     setNewModelSupportsImage(false);
     setNewModelContextWindow(undefined);
+    setNewModelCustomParams('');
     setModelFormError(null);
   };
 
-  const handleEditModel = (modelId: string, modelName: string, supportsImage?: boolean, contextWindow?: number) => {
+  const handleEditModel = (modelId: string, modelName: string, supportsImage?: boolean, contextWindow?: number, customParams?: Record<string, unknown>) => {
     setIsAddingModel(false);
     setIsEditingModel(true);
     setEditingModelId(modelId);
@@ -1904,6 +1906,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setNewModelId(modelId);
     setNewModelSupportsImage(!!supportsImage);
     setNewModelContextWindow(contextWindow);
+    setNewModelCustomParams(
+      customParams && Object.keys(customParams).length > 0
+        ? JSON.stringify(customParams, null, 2)
+        : '',
+    );
     setModelFormError(null);
   };
 
@@ -1954,6 +1961,22 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
       return;
     }
 
+    // Parse custom params JSON (validate before saving)
+    let parsedCustomParams: Record<string, unknown> | undefined;
+    const trimmedParams = newModelCustomParams.trim();
+    if (trimmedParams) {
+      try {
+        parsedCustomParams = JSON.parse(trimmedParams);
+        if (typeof parsedCustomParams !== 'object' || parsedCustomParams === null || Array.isArray(parsedCustomParams)) {
+          setModelFormError(i18nService.t('customParamsInvalidJson'));
+          return;
+        }
+      } catch {
+        setModelFormError(i18nService.t('customParamsInvalidJson'));
+        return;
+      }
+    }
+
     const nextModel = {
       id: modelId,
       name: modelName,
@@ -1963,6 +1986,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         newModelSupportsImage,
       ),
       ...(newModelContextWindow !== undefined ? { contextWindow: newModelContextWindow } : {}),
+      ...(parsedCustomParams && Object.keys(parsedCustomParams).length > 0
+        ? { customParams: parsedCustomParams }
+        : {}),
     };
     const updatedModels = isEditingModel && editingModelId
       ? currentModels.map(model => (model.id === editingModelId ? nextModel : model))
@@ -1982,6 +2008,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setNewModelName('');
     setNewModelId('');
     setNewModelSupportsImage(false);
+    setNewModelCustomParams('');
     setModelFormError(null);
   };
 
@@ -1993,6 +2020,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     setNewModelId('');
     setNewModelSupportsImage(false);
     setNewModelContextWindow(undefined);
+    setNewModelCustomParams('');
     setModelFormError(null);
   };
 
@@ -3122,6 +3150,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
             setNewModelSupportsImage={setNewModelSupportsImage}
             newModelContextWindow={newModelContextWindow}
             setNewModelContextWindow={setNewModelContextWindow}
+            newModelCustomParams={newModelCustomParams}
+            setNewModelCustomParams={setNewModelCustomParams}
             modelFormError={modelFormError}
             setModelFormError={setModelFormError}
             importInputRef={importInputRef}
