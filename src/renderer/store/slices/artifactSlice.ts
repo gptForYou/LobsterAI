@@ -150,7 +150,7 @@ const artifactSlice = createSlice({
       const existing = state.artifactsBySession[sessionId].findIndex(a => a.id === artifact.id);
       if (existing >= 0) {
         const old = state.artifactsBySession[sessionId][existing];
-        if (artifact.content || !old.content) {
+        if (artifact.content || !old.content || artifact.contentVersion !== old.contentVersion) {
           state.artifactsBySession[sessionId][existing] = artifact;
         }
       } else {
@@ -176,7 +176,7 @@ const artifactSlice = createSlice({
           );
           if (dupIndex >= 0) {
             const old = state.artifactsBySession[sessionId][dupIndex];
-            if (artifact.content || !old.content) {
+            if (artifact.content || !old.content || artifact.contentVersion !== old.contentVersion) {
               state.artifactsBySession[sessionId][dupIndex] = artifact;
               replacePreviewTabArtifactId(state, sessionId, old.id, artifact.id);
             }

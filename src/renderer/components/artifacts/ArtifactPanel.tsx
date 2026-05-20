@@ -415,7 +415,16 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
         await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
       }
     } else {
-      await navigator.clipboard.writeText(selectedArtifact.content);
+      if (selectedArtifact.filePath && !selectedArtifact.content && selectedArtifact.type !== 'document') {
+        const result = await window.electron?.dialog?.readTextFile?.(selectedArtifact.filePath);
+        if (!result?.success || typeof result.content !== 'string') {
+          window.dispatchEvent(new CustomEvent('app:showToast', { detail: result?.error || t('copyFailed') }));
+          return;
+        }
+        await navigator.clipboard.writeText(result.content);
+      } else {
+        await navigator.clipboard.writeText(selectedArtifact.content);
+      }
     }
     window.dispatchEvent(new CustomEvent('app:showToast', { detail: t('messageCopied') }));
   }, [selectedArtifact]);
@@ -476,9 +485,31 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   const handleRefresh = useCallback(async () => {
     if (!selectedArtifact?.filePath) return;
     try {
+      if (selectedArtifact.type === ArtifactTypeValue.Html) {
+        dispatch(addArtifact({
+          sessionId: selectedArtifact.sessionId,
+          artifact: {
+            ...selectedArtifact,
+            contentVersion: Date.now(),
+          },
+        }));
+        return;
+      }
+
+      const isTextType = selectedArtifact.type !== 'image' && selectedArtifact.type !== 'document';
+      if (isTextType && window.electron?.dialog?.readTextFile) {
+        const result = await window.electron.dialog.readTextFile(selectedArtifact.filePath);
+        if (result?.success && typeof result.content === 'string') {
+          dispatch(addArtifact({
+            sessionId: selectedArtifact.sessionId,
+            artifact: { ...selectedArtifact, content: result.content, contentVersion: Date.now() },
+          }));
+        }
+        return;
+      }
+
       const result = await window.electron.dialog.readFileAsDataUrl(selectedArtifact.filePath);
       if (result?.success && result.dataUrl) {
-        const isTextType = selectedArtifact.type !== 'image' && selectedArtifact.type !== 'document';
         let content = result.dataUrl;
         if (isTextType) {
           try {

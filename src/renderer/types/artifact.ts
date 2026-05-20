@@ -33,6 +33,7 @@ export interface Artifact {
   fileName?: string;
   filePath?: string;
   url?: string;
+  contentVersion?: number;
   createdAt: number;
 }
 

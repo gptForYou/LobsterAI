@@ -1974,6 +1974,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const [artifactAddMenuPosition, setArtifactAddMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const [artifactTabsCanScrollLeft, setArtifactTabsCanScrollLeft] = useState(false);
   const [artifactTabsCanScrollRight, setArtifactTabsCanScrollRight] = useState(false);
+  const [artifactTabsIsOverflowing, setArtifactTabsIsOverflowing] = useState(false);
   const [artifactPanelMinWidth, setArtifactPanelMinWidth] = useState(MIN_PANEL_WIDTH);
   const [artifactPanelMaxWidth, setArtifactPanelMaxWidth] = useState(MAX_PANEL_WIDTH);
   const previousArtifactPanelOpenRef = useRef(isPanelOpen);
@@ -2001,6 +2002,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       .map(tab => ({ tab, artifact: artifactsById.get(tab.artifactId) }))
       .filter((item): item is { tab: typeof artifactPreviewTabs[number]; artifact: Artifact } => Boolean(item.artifact));
   }, [artifactPreviewTabs, sessionArtifacts]);
+  const shouldPinArtifactAddTab = artifactTabsIsOverflowing || artifactTabsCanScrollLeft || artifactTabsCanScrollRight;
 
   const loadedFileIdsRef = useRef<Set<string>>(new Set());
 
@@ -2323,12 +2325,14 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     if (!element) {
       setArtifactTabsCanScrollLeft(false);
       setArtifactTabsCanScrollRight(false);
+      setArtifactTabsIsOverflowing(false);
       return;
     }
 
     const maxScrollLeft = Math.max(0, element.scrollWidth - element.clientWidth);
     setArtifactTabsCanScrollLeft(element.scrollLeft > 1);
     setArtifactTabsCanScrollRight(element.scrollLeft < maxScrollLeft - 1);
+    setArtifactTabsIsOverflowing(element.scrollWidth > element.clientWidth + 1);
   }, []);
 
   useLayoutEffect(() => {
@@ -2345,7 +2349,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       const containerRect = container.getBoundingClientRect();
       const activeRect = activeTab.getBoundingClientRect();
       const visibleLeft = containerRect.left;
-      const visibleRight = containerRect.right - 36;
+      const visibleRight = containerRect.right - (shouldPinArtifactAddTab ? 36 : 0);
       const padding = 8;
 
       if (activeRect.left < visibleLeft + padding) {
@@ -2366,6 +2370,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     isArtifactPanelVisible,
     isBrowserPreviewTabOpen,
     isFileListPreviewTabOpen,
+    shouldPinArtifactAddTab,
     updateArtifactTabsScrollState,
   ]);
 
@@ -2374,6 +2379,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     if (!element || !isArtifactPanelVisible) {
       setArtifactTabsCanScrollLeft(false);
       setArtifactTabsCanScrollRight(false);
+      setArtifactTabsIsOverflowing(false);
       return undefined;
     }
 
@@ -2528,6 +2534,21 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           const absPath = rawPath.startsWith('/')
             ? rawPath
             : (/^[A-Za-z]:/.test(rawPath) ? rawPath : `${cwd}/${rawPath}`);
+          if (artifact.type === ArtifactTypeValue.Html) {
+            try {
+              const stat = await window.electron.dialog.statFile(absPath);
+              if (stat?.success && stat.isFile) {
+                dispatch(addArtifact({
+                  sessionId,
+                  artifact: { ...artifact, content: '', filePath: absPath, contentVersion: Date.now() },
+                }));
+              }
+            } catch {
+              // File unreadable or missing.
+            }
+            loadedFileIdsRef.current.add(artifact.id);
+            continue;
+          }
           try {
             const result = await window.electron.dialog.readFileAsDataUrl(absPath);
             if (result?.success && result.dataUrl) {
@@ -2611,6 +2632,21 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           const absPath = rawPath.startsWith('/')
             ? rawPath
             : (/^[A-Za-z]:/.test(rawPath) ? rawPath : `${cwd}/${rawPath}`);
+          if (artifact.type === ArtifactTypeValue.Html) {
+            try {
+              const stat = await window.electron.dialog.statFile(absPath);
+              if (stat?.success && stat.isFile) {
+                dispatch(addArtifact({
+                  sessionId,
+                  artifact: { ...artifact, content: '', filePath: absPath, contentVersion: Date.now() },
+                }));
+              }
+            } catch {
+              // File unreadable or missing.
+            }
+            loadedFileIdsRef.current.add(artifact.id);
+            continue;
+          }
           try {
             const result = await window.electron.dialog.readFileAsDataUrl(absPath);
             if (result?.success && result.dataUrl) {
@@ -3422,7 +3458,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                       <div
                         key={tab.id}
                         data-artifact-preview-active={isActive ? 'true' : undefined}
-                        className={`group flex h-7 w-[clamp(92px,24vw,190px)] items-center rounded-lg text-xs transition-colors ${
+                        className={`group flex h-7 max-w-[190px] shrink-0 items-center rounded-lg text-xs transition-colors ${
                           isActive
                             ? 'bg-surface-raised text-foreground shadow-sm'
                             : 'text-secondary hover:bg-surface hover:text-foreground'
@@ -3431,7 +3467,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                         <button
                           type="button"
                           onClick={() => handleActivateArtifactTab(tab.id)}
-                          className="flex min-w-0 flex-1 items-center gap-1.5 px-2 text-left"
+                          className="flex min-w-0 max-w-[158px] items-center gap-1.5 px-2 text-left"
                           title={fileName}
                         >
                           <FileTypeIcon fileName={fileName} className="h-3.5 w-3.5 shrink-0" />
@@ -3455,7 +3491,28 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                       </div>
                     );
                   })}
-                  <div className="sticky right-0 z-20 flex h-full shrink-0 items-center bg-background pl-1 pr-1">
+                  {shouldPinArtifactAddTab ? (
+                    <div className="h-full w-9 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <div className="z-20 flex h-full shrink-0 items-center bg-background pl-1 pr-1">
+                      <button
+                        ref={artifactAddButtonRef}
+                        type="button"
+                        onClick={handleToggleArtifactAddMenu}
+                        className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-secondary transition-colors hover:bg-surface hover:text-foreground ${
+                          showArtifactAddMenu ? 'bg-surface text-foreground' : ''
+                        }`}
+                        aria-label={i18nService.t('artifactAddTab')}
+                        title={i18nService.t('artifactAddTab')}
+                      >
+                        <ArtifactTabPlusIcon className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+                  </div>
+                </div>
+                {shouldPinArtifactAddTab && (
+                  <div className="absolute inset-y-0 right-0 z-20 flex items-center bg-background pl-1 pr-1">
                     <button
                       ref={artifactAddButtonRef}
                       type="button"
@@ -3469,8 +3526,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                       <ArtifactTabPlusIcon className="h-4 w-4" />
                     </button>
                   </div>
-                  </div>
-                </div>
+                )}
                 {(artifactTabsCanScrollLeft || artifactTabsCanScrollRight) && (
                   <>
                     {artifactTabsCanScrollLeft && (

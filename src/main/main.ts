@@ -13,6 +13,7 @@ import { AppUpdateIpc } from '../shared/appUpdate/constants';
 import { ArtifactBrowserPartition, ArtifactPreviewIpc } from '../shared/artifactPreview/constants';
 import { ClipboardIpc } from '../shared/clipboard/constants';
 import { COWORK_MESSAGE_PAGE_SIZE, COWORK_SESSION_PAGE_SIZE } from '../shared/cowork/constants';
+import { DialogIpc } from '../shared/dialog/constants';
 import { type ListLocalWebServicesOptions, type LocalWebService, LocalWebServicesIpc } from '../shared/localWebServices/constants';
 import { PlatformRegistry } from '../shared/platform';
 import { ProviderName } from '../shared/providers';
@@ -5419,6 +5420,68 @@ if (!gotTheLock) {
         const mimeType = MIME_BY_EXT[ext] || 'application/octet-stream';
         const base64 = buffer.toString('base64');
         return { success: true, dataUrl: `data:${mimeType};base64,${base64}` };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to read file',
+        };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    DialogIpc.StatFile,
+    async (_event, filePath?: string): Promise<{ success: boolean; isFile?: boolean; size?: number; mtimeMs?: number; error?: string }> => {
+      try {
+        if (typeof filePath !== 'string' || !filePath.trim()) {
+          return { success: false, error: 'Missing file path' };
+        }
+        const stat = await fs.promises.stat(path.resolve(filePath.trim()));
+        return {
+          success: true,
+          isFile: stat.isFile(),
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to stat file',
+        };
+      }
+    }
+  );
+
+  const MAX_READ_TEXT_FILE_BYTES = 2 * 1024 * 1024;
+  ipcMain.handle(
+    DialogIpc.ReadTextFile,
+    async (_event, filePath?: string): Promise<{ success: boolean; content?: string; size?: number; readBytes?: number; truncated?: boolean; error?: string }> => {
+      try {
+        if (typeof filePath !== 'string' || !filePath.trim()) {
+          return { success: false, error: 'Missing file path' };
+        }
+        const resolvedPath = path.resolve(filePath.trim());
+        const stat = await fs.promises.stat(resolvedPath);
+        if (!stat.isFile()) {
+          return { success: false, error: 'Not a file' };
+        }
+
+        const truncated = stat.size > MAX_READ_TEXT_FILE_BYTES;
+        const handle = await fs.promises.open(resolvedPath, 'r');
+        try {
+          const bytesToRead = Math.min(stat.size, MAX_READ_TEXT_FILE_BYTES);
+          const buffer = Buffer.alloc(bytesToRead);
+          const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0);
+          return {
+            success: true,
+            content: buffer.subarray(0, bytesRead).toString('utf8'),
+            size: stat.size,
+            readBytes: bytesRead,
+            truncated,
+          };
+        } finally {
+          await handle.close();
+        }
       } catch (error) {
         return {
           success: false,

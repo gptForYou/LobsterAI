@@ -5,6 +5,7 @@ import { AgentIpcChannel } from '../shared/agent/constants';
 import { AppUpdateIpc } from '../shared/appUpdate/constants';
 import { ArtifactPreviewIpc } from '../shared/artifactPreview/constants';
 import { ClipboardIpc } from '../shared/clipboard/constants';
+import { DialogIpc } from '../shared/dialog/constants';
 import type { ListLocalWebServicesOptions, LocalWebService } from '../shared/localWebServices/constants';
 import { LocalWebServicesIpc } from '../shared/localWebServices/constants';
 import type { Platform } from '../shared/platform';
@@ -386,6 +387,10 @@ contextBridge.exposeInMainWorld('electron', {
     }) => ipcRenderer.invoke('dialog:saveInlineFile', options),
     readFileAsDataUrl: (filePath: string) =>
       ipcRenderer.invoke('dialog:readFileAsDataUrl', filePath),
+    statFile: (filePath: string) =>
+      ipcRenderer.invoke(DialogIpc.StatFile, filePath),
+    readTextFile: (filePath: string) =>
+      ipcRenderer.invoke(DialogIpc.ReadTextFile, filePath),
     generateThumbnail: (filePath: string) =>
       ipcRenderer.invoke('dialog:generateThumbnail', filePath),
     showMessageBox: (options: { message: string; type?: 'none' | 'info' | 'error' | 'question' | 'warning'; title?: string }) =>

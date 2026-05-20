@@ -598,6 +598,8 @@ interface IElectronAPI {
     selectFiles: (options?: { title?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<{ success: boolean; paths: string[] }>;
     saveInlineFile: (options: { dataBase64: string; fileName?: string; mimeType?: string; cwd?: string }) => Promise<{ success: boolean; path: string | null; error?: string }>;
     readFileAsDataUrl: (filePath: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
+    statFile: (filePath: string) => Promise<{ success: boolean; isFile?: boolean; size?: number; mtimeMs?: number; error?: string }>;
+    readTextFile: (filePath: string) => Promise<{ success: boolean; content?: string; size?: number; readBytes?: number; truncated?: boolean; error?: string }>;
     generateThumbnail: (filePath: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
     showMessageBox: (options: { message: string; type?: 'none' | 'info' | 'error' | 'question' | 'warning'; title?: string }) => Promise<{ response: number }>;
   };
