@@ -1,3 +1,4 @@
+import { isInternalCompactionSystemText } from '../../common/coworkSystemMessages';
 import {
   parseScheduledReminderPrompt,
   parseSimpleScheduledReminderText,
@@ -220,6 +221,9 @@ export const extractGatewayHistoryEntry = (message: unknown): GatewayHistoryEntr
     }
   }
   if (shouldSuppressHeartbeatText(role, text)) {
+    return null;
+  }
+  if (role === 'system' && isInternalCompactionSystemText(text)) {
     return null;
   }
 
