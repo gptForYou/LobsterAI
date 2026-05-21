@@ -12,6 +12,78 @@ import { i18nService } from '../../services/i18n';
 import type { IMConnectivityTestResult,QQInstanceConfig, QQInstanceStatus, QQOpenClawConfig } from '../../types/im';
 import TrashIcon from '../icons/TrashIcon';
 
+const PairingSection: React.FC<{
+  platform: string;
+}> = ({ platform }) => {
+  const [pairingCodeInput, setPairingCodeInput] = useState('');
+  const [pairingStatus, setPairingStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const handleApprovePairing = async (code: string) => {
+    setPairingStatus(null);
+    try {
+      const result = await window.electron.im.approvePairingCode(platform, code);
+      if (result.success) {
+        setPairingStatus({ type: 'success', message: i18nService.t('imPairingCodeApproved').replace('{code}', code) });
+      } else {
+        setPairingStatus({ type: 'error', message: result.error || i18nService.t('imPairingCodeInvalid') });
+      }
+    } catch {
+      setPairingStatus({ type: 'error', message: i18nService.t('imPairingCodeInvalid') });
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <label className="block text-xs font-medium text-secondary">
+        {i18nService.t('imPairingApproval')}
+      </label>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={pairingCodeInput}
+          onChange={(e) => {
+            setPairingCodeInput(e.target.value.toUpperCase());
+            if (pairingStatus) setPairingStatus(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              const code = pairingCodeInput.trim();
+              if (code) {
+                void handleApprovePairing(code).then(() => {
+                  setPairingCodeInput('');
+                });
+              }
+            }
+          }}
+          className="block flex-1 rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm font-mono uppercase tracking-widest transition-colors"
+          placeholder={i18nService.t('imPairingCodePlaceholder')}
+          maxLength={8}
+        />
+        <button
+          type="button"
+          onClick={() => {
+            const code = pairingCodeInput.trim();
+            if (code) {
+              void handleApprovePairing(code).then(() => {
+                setPairingCodeInput('');
+              });
+            }
+          }}
+          className="px-3 py-2 rounded-lg text-xs font-medium bg-green-500/15 text-green-600 dark:text-green-400 hover:bg-green-500/25 transition-colors"
+        >
+          {i18nService.t('imPairingApprove')}
+        </button>
+      </div>
+      {pairingStatus && (
+        <p className={`text-xs ${pairingStatus.type === 'success' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+          {pairingStatus.type === 'success' ? '✓' : '✗'} {pairingStatus.message}
+        </p>
+      )}
+    </div>
+  );
+};
+
 interface QQInstanceSettingsProps {
   instance: QQInstanceConfig;
   instanceStatus: QQInstanceStatus | undefined;
@@ -253,6 +325,11 @@ const QQInstanceSettings: React.FC<QQInstanceSettingsProps> = ({
               <option value="allowlist">{i18nService.t('imDmPolicyAllowlist')}</option>
             </select>
           </div>
+
+          {/* Pairing Requests (shown when dmPolicy is 'pairing') */}
+          {instance.dmPolicy === 'pairing' && (
+            <PairingSection platform="qq" />
+          )}
 
           {/* Allow From */}
           <div className="space-y-1.5">

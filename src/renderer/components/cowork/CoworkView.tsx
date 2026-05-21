@@ -13,7 +13,7 @@ import {
   selectCurrentSession,
   selectIsStreaming,
 } from '../../store/selectors/coworkSelectors';
-import { addMessage, clearCurrentSession, setCurrentSession, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
+import { addMessage, setCurrentSession, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
 import { clearSelection,selectAction, setActions } from '../../store/slices/quickActionSlice';
 import { clearActiveSkills, setActiveSkillIds } from '../../store/slices/skillSlice';
 import type { CoworkImageAttachment, CoworkSession, OpenClawEngineStatus } from '../../types/cowork';
@@ -27,6 +27,7 @@ import WindowTitleBar from '../window/WindowTitleBar';
 import { useAgentSelectedModel } from './agentModelSelection';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import CoworkSessionDetail from './CoworkSessionDetail';
+import { buildCoworkContinuationSystemPrompt, buildCoworkSystemPrompt } from './skillSystemPrompt';
 
 export interface CoworkViewProps {
   onRequestAppSettings?: (options?: SettingsOpenOptions) => void;
@@ -274,9 +275,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       // auto-routing prompt to avoid injecting Claude SDK tool-calling instructions
       // that confuse non-Claude models (e.g. kimi-k2.5 falls back to text-based
       // tool calls, producing empty tool names and err=true failures).
-      const combinedSystemPrompt = [skillPrompt, config.systemPrompt]
-        .filter(p => p?.trim())
-        .join('\n\n') || undefined;
+      const combinedSystemPrompt = buildCoworkSystemPrompt(skillPrompt, config.systemPrompt);
 
       // Start the actual session immediately with fallback title
       const sessionModelOverride = currentAgentSelectedModel ? toOpenClawModelRef(currentAgentSelectedModel) : '';
@@ -324,9 +323,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   };
 
   const handleContinueSession = async (prompt: string, skillPrompt?: string, imageAttachments?: CoworkImageAttachment[], mediaReferences?: MediaAttachmentRef[]) => {
-    if (!currentSession) return;
+    if (!currentSession) return false;
     // Prevent duplicate submissions
-    if (isContinuingRef.current) return;
+    if (isContinuingRef.current) return false;
     if (openClawStatus && !isOpenClawReadyForSession(openClawStatus)) {
       window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('coworkErrorEngineNotReady') }));
       return false;
@@ -344,18 +343,11 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       // Capture active skill IDs before clearing
       const sessionSkillIds = [...activeSkillIds];
 
-      // Clear active skills after capturing so they don't persist to next message
-      if (sessionSkillIds.length > 0) {
-        dispatch(clearActiveSkills());
-      }
+      // Only send a continuation system prompt when this turn selects new skills.
+      // Otherwise the main process falls back to the session prompt created on the first turn.
+      const combinedSystemPrompt = buildCoworkContinuationSystemPrompt(skillPrompt, config.systemPrompt);
 
-      // Combine skill prompt with system prompt for continuation.
-      // Skip auto-routing prompt for OpenClaw — skills are loaded natively.
-      const combinedSystemPrompt = [skillPrompt, config.systemPrompt]
-        .filter(p => p?.trim())
-        .join('\n\n') || undefined;
-
-      await coworkService.continueSession({
+      const sent = await coworkService.continueSession({
         sessionId: currentSession.id,
         prompt,
         systemPrompt: combinedSystemPrompt,
@@ -364,6 +356,10 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         mediaSelection: mediaSelection && mediaSelection.mode !== 'none' ? mediaSelection : undefined,
         mediaReferences,
       });
+      if (sent && sessionSkillIds.length > 0) {
+        dispatch(clearActiveSkills());
+      }
+      return sent;
     } finally {
       isContinuingRef.current = false;
     }
@@ -418,7 +414,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     const handleNewSession = () => {
       // Only clear when already on home (no session) — preserve __home__ draft when returning from a session
       const shouldClear = !currentSession;
-      dispatch(clearCurrentSession());
+      coworkService.clearSession({ restoreAgentSkills: true });
       dispatch(clearSelection());
       window.dispatchEvent(new CustomEvent('cowork:focus-input', {
         detail: { clear: shouldClear },
@@ -544,7 +540,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
 
   // Home view - no current session
   return (
-    <div className="flex-1 flex flex-col bg-surface h-full">
+    <div className="flex-1 flex flex-col bg-background h-full">
       {/* Engine status banner for error states */}
       {engineStatusBanner}
 

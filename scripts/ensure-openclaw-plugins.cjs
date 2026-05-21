@@ -805,6 +805,24 @@ function ${patchMarker}(name) {
     } else {
       log('dingtalk-connector/message-handler.ts: file:// pattern not found or already patched, skipping');
     }
+
+    // --- Post-install patch: dingtalk-connector account wildcard bindings ---
+    // LobsterAI writes platform-level agent bindings as accountId:"*" so one
+    // IM platform can route to a non-main Agent regardless of the concrete
+    // DingTalk account.  The plugin's custom binding matcher treated accountId
+    // as an exact string only, bypassing OpenClaw core wildcard semantics and
+    // falling back to the main Agent.
+    const exactAccountPattern = 'if (match.accountId && match.accountId !== accountId) continue;';
+    const wildcardAccountPattern = 'if (match.accountId && match.accountId !== "*" && match.accountId !== accountId) continue;';
+    if (dtSrc.includes(exactAccountPattern)) {
+      dtSrc = dtSrc.replaceAll(exactAccountPattern, wildcardAccountPattern);
+      fs.writeFileSync(dingtalkMsgHandlerPath, dtSrc);
+      log('Patched dingtalk-connector/message-handler.ts: accountId wildcard bindings now match all accounts');
+    } else if (dtSrc.includes(wildcardAccountPattern)) {
+      log('dingtalk-connector/message-handler.ts account wildcard patch already applied, skipping');
+    } else {
+      log('dingtalk-connector/message-handler.ts: account binding pattern not found, skipping wildcard patch');
+    }
   } else {
     log('dingtalk-connector not found, skipping file:// URL patch');
   }

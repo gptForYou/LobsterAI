@@ -1,19 +1,15 @@
 /**
- * McpBridgeServer — lightweight HTTP callback endpoint for the OpenClaw MCP Bridge.
+ * McpBridgeServer — lightweight HTTP callback endpoint for OpenClaw's ask-user-question plugin.
  *
- * OpenClaw's mcp-bridge plugin calls this endpoint to execute MCP tools.
- * OpenClaw's ask-user-question plugin calls /askuser for user confirmation dialogs.
+ * Provides a /askuser endpoint that OpenClaw calls to show user confirmation dialogs.
  * Binds to 127.0.0.1 only (local traffic).
  */
 import crypto from 'crypto';
 import http from 'http';
 import net from 'net';
 
-import { getToolTextPreview, looksLikeTransportErrorText, serializeForLog, serializeToolContentForLog } from './mcpLog';
-import type { McpServerManager } from './mcpServerManager';
-
 const log = (level: string, msg: string) => {
-  const formatted = `[McpBridge:HTTP][${level}] ${msg}`;
+  const formatted = `[AskUser:HTTP][${level}] ${msg}`;
   if (level === 'ERROR') {
     console.error(formatted);
   } else if (level === 'WARN') {
@@ -62,25 +58,19 @@ export type MediaGenerationResponse = {
 export class McpBridgeServer {
   private server: http.Server | null = null;
   private _port: number | null = null;
-  private readonly mcpManager: McpServerManager;
   private readonly secret: string;
   private readonly pendingAskUser = new Map<string, PendingAskUser>();
   private onAskUserCallback: ((request: AskUserRequest) => void) | null = null;
   private onAskUserDismissCallback: ((requestId: string) => void) | null = null;
   private onMediaGenerationCallback: ((request: MediaGenerationRequest) => Promise<MediaGenerationResponse>) | null = null;
 
-  constructor(mcpManager: McpServerManager, secret: string) {
-    this.mcpManager = mcpManager;
+  constructor(secret: string) {
     this.secret = secret;
     log('INFO', `McpBridgeServer created, secret prefix="${secret.slice(0, 8)}…"`);
   }
 
   get port(): number | null {
     return this._port;
-  }
-
-  get callbackUrl(): string | null {
-    return this._port ? `http://127.0.0.1:${this._port}/mcp/execute` : null;
   }
 
   get askUserCallbackUrl(): string | null {
@@ -190,7 +180,7 @@ export class McpBridgeServer {
       return;
     }
 
-    // Verify secret token (accept any of the known header names)
+    // Verify secret token (accept any of the known header name for backwards compats)
     const authHeader = req.headers['x-mcp-bridge-secret'] || req.headers['x-ask-user-secret'] || req.headers['x-lobster-media-secret'];
     if (authHeader !== this.secret) {
       log('WARN', `Auth rejected for ${req.url}: header=${authHeader ? 'present-but-mismatch' : 'missing'}`);
@@ -206,11 +196,6 @@ export class McpBridgeServer {
 
     if (req.url?.startsWith('/media-generation/tool')) {
       await this.handleMediaGeneration(req, res);
-      return;
-    }
-
-    if (req.url?.startsWith('/mcp/execute')) {
-      await this.handleMcpExecute(req, res);
       return;
     }
 
@@ -268,69 +253,6 @@ export class McpBridgeServer {
       log('ERROR', `AskUser request error: ${errMsg}`);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ behavior: 'deny' }));
-    }
-  }
-
-  private async handleMcpExecute(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // Abort in-flight MCP tool calls when the gateway drops the HTTP connection
-    // (e.g. after chat.abort).  This prevents zombie 60-second MCP timeouts from
-    // keeping the gateway run active and blocking new user messages.
-    //
-    // Listen on `res` (ServerResponse), NOT `req` (IncomingMessage).
-    // `req` is a Readable stream that emits `close` after the body is consumed
-    // (auto-destroy via nextTick, which runs before the Promise microtask from
-    // readBody), causing the signal to be aborted before callTool even starts.
-    // `res.close` fires when the underlying socket disconnects; we only abort
-    // if the response hasn't been fully sent yet (i.e. a premature disconnect).
-    const abortController = new AbortController();
-    const onClose = () => {
-      if (!res.writableFinished) {
-        abortController.abort();
-      }
-    };
-    res.on('close', onClose);
-
-    try {
-      const body = await this.readBody(req);
-      const { server, tool, args } = JSON.parse(body) as {
-        server: string;
-        tool: string;
-        args: Record<string, unknown>;
-      };
-
-      log('INFO', `Execute request received for server="${server}" tool="${tool}" with arguments ${serializeForLog(args || {})}`);
-
-      if (!server || !tool) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing "server" or "tool" field' }));
-        return;
-      }
-
-      const t0 = Date.now();
-      const result = await this.mcpManager.callTool(server, tool, args || {}, { signal: abortController.signal });
-      const contentPreview = serializeToolContentForLog(result.content);
-      const textPreview = getToolTextPreview(result.content);
-      log('INFO', `Execute completed for server="${server}" tool="${tool}" in ${Date.now() - t0}ms with isError=${result.isError}. Result=${contentPreview}`);
-      if (!result.isError && looksLikeTransportErrorText(textPreview)) {
-        log('WARN', `Execute completed for server="${server}" tool="${tool}" with transport-style error text but isError=false. Result text="${textPreview}"`);
-      }
-
-      if (!res.writableEnded) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
-      }
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      log('ERROR', `Request handling error: ${errMsg}`);
-      if (!res.writableEnded) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          content: [{ type: 'text', text: `Bridge error: ${errMsg}` }],
-          isError: true,
-        }));
-      }
-    } finally {
-      res.removeListener('close', onClose);
     }
   }
 

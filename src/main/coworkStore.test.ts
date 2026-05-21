@@ -96,6 +96,32 @@ function setupDb(): void {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS user_memories (
+      id TEXT PRIMARY KEY,
+      text TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.75,
+      is_explicit INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'created',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_used_at INTEGER
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_memory_sources (
+      id TEXT PRIMARY KEY,
+      memory_id TEXT NOT NULL,
+      session_id TEXT,
+      message_id TEXT,
+      role TEXT NOT NULL DEFAULT 'system',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS cowork_user_memories (
       id TEXT PRIMARY KEY,
       text TEXT NOT NULL,
@@ -300,6 +326,32 @@ test('updateSession can patch model override without refreshing the session upda
   expect(session?.updatedAt).toBe(1000);
 });
 
+test('updateSession can rename without refreshing the session updated time', () => {
+  const sid = 'sess-title-only';
+  insertSession(sid);
+  db.prepare('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?').run(1000, sid);
+
+  store.updateSession(sid, { title: 'Renamed task' }, { touchUpdatedAt: false });
+
+  const session = store.getSession(sid);
+  expect(session?.title).toBe('Renamed task');
+  expect(session?.updatedAt).toBe(1000);
+});
+
+test('deleteSession removes messages without relying on foreign key cascade', () => {
+  const sid = 'sess-delete-hard';
+  insertSession(sid);
+  insertMessage('msg-delete-hard', sid, 'user', 'remove me', '{}', 1);
+
+  store.deleteSession(sid);
+
+  expect(store.getSession(sid)).toBeNull();
+  const messageCount = db
+    .prepare('SELECT COUNT(*) AS count FROM cowork_messages WHERE session_id = ?')
+    .get(sid) as { count: number };
+  expect(messageCount.count).toBe(0);
+});
+
 test('agent CRUD stores working directory independently', () => {
   const agent = store.createAgent({
     name: 'Docs Agent',
@@ -315,6 +367,42 @@ test('agent CRUD stores working directory independently', () => {
 
   expect(updated?.workingDirectory).toBe('/tmp/docs-next');
   expect(store.getAgent(agent.id)?.workingDirectory).toBe('/tmp/docs-next');
+});
+
+test('deleteAgent removes its task history before an agent with the same name is recreated', () => {
+  const agent = store.createAgent({ name: 'Docs Agent' });
+  const session = store.createSession('Old Docs Task', '/tmp/docs-project', '', 'local', [], agent.id);
+  insertMessage('msg-agent-delete', session.id, 'assistant', 'old result', '{}', 1);
+
+  expect(store.listSessionIdsByAgent(agent.id)).toEqual([session.id]);
+  expect(store.deleteAgent(agent.id)).toBe(true);
+
+  expect(store.getAgent(agent.id)).toBeNull();
+  expect(store.listSessions(20, 0, agent.id)).toEqual([]);
+  const messageCount = db
+    .prepare('SELECT COUNT(*) AS count FROM cowork_messages WHERE session_id = ?')
+    .get(session.id) as { count: number };
+  expect(messageCount.count).toBe(0);
+
+  const recreated = store.createAgent({ name: 'Docs Agent' });
+  expect(recreated.id).toBe(agent.id);
+  expect(store.listSessions(20, 0, recreated.id)).toEqual([]);
+});
+
+test('createAgent clears orphaned task history left by legacy agent deletion', () => {
+  const agent = store.createAgent({ name: 'Legacy Deleted Agent' });
+  const session = store.createSession('Legacy Orphan Task', '/tmp/docs-project', '', 'local', [], agent.id);
+  insertMessage('msg-legacy-orphan', session.id, 'assistant', 'legacy result', '{}', 1);
+  db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id);
+
+  const recreated = store.createAgent({ name: 'Legacy Deleted Agent' });
+
+  expect(recreated.id).toBe(agent.id);
+  expect(store.listSessions(20, 0, recreated.id)).toEqual([]);
+  const messageCount = db
+    .prepare('SELECT COUNT(*) AS count FROM cowork_messages WHERE session_id = ?')
+    .get(session.id) as { count: number };
+  expect(messageCount.count).toBe(0);
 });
 
 test('agent CRUD normalizes legacy icons to the default svg avatar', () => {

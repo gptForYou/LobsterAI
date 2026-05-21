@@ -50,6 +50,7 @@ vi.mock('./claudeSettings', () => ({
 }));
 
 vi.mock('./openclawLocalExtensions', () => ({
+  findBundledExtensionsDir: () => null,
   findThirdPartyExtensionsDir: () => null,
   hasBundledOpenClawExtension: (id: string) => id !== 'qwen-portal-auth',
   resolveOpenClawExtensionPluginId: (id: string) => {
@@ -241,6 +242,76 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.agents.defaults.cwd).toBe(path.resolve(tmpDir));
   });
 
+  test('uses the main agent working directory for default agent cwd', async () => {
+    const { OpenClawConfigSync } = await import('./openclawConfigSync');
+    const legacyWorkingDirectory = path.join(tmpDir, 'legacy-working-directory');
+    const mainAgentWorkingDirectory = path.join(tmpDir, 'main-agent-working-directory');
+
+    const sync = new OpenClawConfigSync({
+      engineManager: {
+        getConfigPath: () => configPath,
+        getGatewayToken: () => 'gateway-token',
+        getStateDir: () => stateDir,
+        getBaseDir: () => tmpDir,
+      } as never,
+      getCoworkConfig: () => ({
+        workingDirectory: legacyWorkingDirectory,
+        systemPrompt: '',
+        executionMode: 'local',
+        agentEngine: 'openclaw',
+        memoryEnabled: false,
+        memoryImplicitUpdateEnabled: false,
+        memoryLlmJudgeEnabled: false,
+        memoryGuardLevel: 'balanced',
+        memoryUserMemoriesMaxItems: 100,
+        skipMissedJobs: false,
+      }),
+      isEnterprise: () => false,
+      getTelegramInstances: () => [],
+      getDiscordOpenClawConfig: () => null,
+      getDingTalkInstances: () => [],
+      getFeishuInstances: () => [],
+      getQQInstances: () => [],
+      getWecomConfig: () => null,
+      getWecomInstances: () => [],
+      getPopoInstances: () => [],
+      getNimConfig: () => null,
+      getNeteaseBeeChanConfig: () => null,
+      getWeixinConfig: () => null,
+      getIMSettings: () => null,
+      getSkillsList: () => [],
+      getAgents: () => [
+        {
+          id: 'main',
+          name: 'Main',
+          description: '',
+          systemPrompt: '',
+          identity: '',
+          model: '',
+          workingDirectory: mainAgentWorkingDirectory,
+          icon: '',
+          skillIds: [],
+          enabled: true,
+          isDefault: true,
+          source: 'custom',
+          presetId: '',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    const result = sync.sync('main-agent-cwd');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const mainEntry = config.agents.list.find((entry: { id?: string }) => entry.id === 'main');
+
+    expect(config.agents.defaults.workspace).toBe(path.join(stateDir, 'workspace-main'));
+    expect(config.agents.defaults.cwd).toBe(path.resolve(mainAgentWorkingDirectory));
+    expect(mainEntry.cwd).toBe(path.resolve(mainAgentWorkingDirectory));
+  });
+
   test('merges all server models into existing lobsterai provider and updates image input', async () => {
     mockRuntimeState.proxyPort = 56646;
     mockRuntimeState.serverModels = [
@@ -383,70 +454,34 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(customSelection.providerConfig.models[0].input).toEqual(['text', 'image']);
   });
 
-  test('adds missing array items in MCP bridge tool schemas for OpenAI compatibility', async () => {
-    const { OpenClawConfigSync } = await import('./openclawConfigSync');
+  test('marks DeepSeek reasoning models and all Xiaomi models as reasoning-capable', async () => {
+    const { OpenClawApi, ProviderName } = await import('../../shared/providers');
+    const { buildProviderSelection } = await import('./openclawConfigSync');
 
-    const sync = new OpenClawConfigSync({
-      engineManager: {
-        getConfigPath: () => configPath,
-        getGatewayToken: () => 'gateway-token',
-        getStateDir: () => stateDir,
-        getBaseDir: () => tmpDir,
-      } as never,
-      getCoworkConfig: () => ({
-        workingDirectory: tmpDir,
-        systemPrompt: '',
-        executionMode: 'local',
-        agentEngine: 'openclaw',
-        memoryEnabled: false,
-        memoryImplicitUpdateEnabled: false,
-        memoryLlmJudgeEnabled: false,
-        memoryGuardLevel: 'balanced',
-        memoryUserMemoriesMaxItems: 100,
-        skipMissedJobs: false,
-      }),
-      isEnterprise: () => false,
-      getTelegramInstances: () => [],
-      getDiscordOpenClawConfig: () => null,
-      getDingTalkInstances: () => [],
-      getFeishuInstances: () => [],
-      getQQInstances: () => [],
-      getWecomConfig: () => null,
-      getWecomInstances: () => [],
-      getPopoInstances: () => [],
-      getNimConfig: () => null,
-      getNeteaseBeeChanConfig: () => null,
-      getWeixinConfig: () => null,
-      getIMSettings: () => null,
-      getSkillsList: () => [],
-      getAgents: () => [],
-      getMcpBridgeConfig: () => ({
-        callbackUrl: 'http://127.0.0.1:12345/mcp',
-        askUserCallbackUrl: 'http://127.0.0.1:12345/ask',
-        secret: 'test-secret',
-        tools: [{
-          server: 'github',
-          name: 'create_issue',
-          description: 'Create an issue',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              attachments: {
-                type: 'array',
-                description: 'Optional issue attachments',
-              },
-            },
-          },
-        }],
-      }),
+    const deepseekSelection = buildProviderSelection({
+      apiKey: 'sk-test',
+      baseURL: 'https://api.deepseek.com',
+      modelId: 'deepseek-v4-pro',
+      apiType: 'openai',
+      providerName: ProviderName.DeepSeek,
+      supportsImage: false,
+      modelName: 'DeepSeek V4 Pro',
     });
+    expect(deepseekSelection.providerConfig.api).toBe(OpenClawApi.OpenAICompletions);
+    expect(deepseekSelection.providerConfig.models[0].reasoning).toBe(true);
 
-    const result = sync.sync('test');
-    expect(result.ok).toBe(true);
-
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const [tool] = config.plugins.entries['mcp-bridge'].config.tools;
-    expect(tool.inputSchema.properties.attachments.items).toEqual({});
+    const xiaomiSelection = buildProviderSelection({
+      apiKey: 'sk-test',
+      baseURL: 'https://api.xiaomimimo.com/v1/chat/completions',
+      modelId: 'mimo-any-model',
+      apiType: 'openai',
+      providerName: ProviderName.Xiaomi,
+      supportsImage: false,
+      modelName: 'MiMo Any Model',
+    });
+    expect(xiaomiSelection.providerConfig.baseUrl).toBe('https://api.xiaomimimo.com/v1');
+    expect(xiaomiSelection.providerConfig.api).toBe(OpenClawApi.OpenAICompletions);
+    expect(xiaomiSelection.providerConfig.models[0].reasoning).toBe(true);
   });
 
   test('writes Telegram streaming in the nested schema expected by current OpenClaw', async () => {
@@ -597,6 +632,140 @@ describe('OpenClawConfigSync runtime config output', () => {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(config.channels['dingtalk-connector']).not.toHaveProperty('_agentBinding');
     expect(config.channels).not.toHaveProperty('dingtalk');
+    expect(config.bindings).toEqual([
+      {
+        agentId: 'worker-agent',
+        match: {
+          channel: 'dingtalk-connector',
+          accountId: 'b8a32c47',
+        },
+      },
+    ]);
+  });
+
+  test('writes platform-level agent bindings with account wildcard and keeps instance bindings exact', async () => {
+    const {
+      OpenClawConfigSync,
+      OPENCLAW_BINDING_ANY_ACCOUNT_ID,
+    } = await import('./openclawConfigSync');
+
+    const dingTalkInstance = {
+      enabled: true,
+      clientId: 'ding-client-id',
+      clientSecret: 'ding-secret',
+      dmPolicy: 'open',
+      allowFrom: ['*'],
+      groupPolicy: 'open',
+      sessionTimeout: 0,
+      separateSessionByConversation: false,
+      groupSessionScope: 'group',
+      sharedMemoryAcrossConversations: false,
+      gatewayBaseUrl: '',
+      debug: false,
+      instanceId: 'b8a32c47-c852-4ad2-bbfa-631797fc56ea',
+      instanceName: 'DingTalk Bot 1',
+    };
+
+    const sync = new OpenClawConfigSync({
+      engineManager: {
+        getConfigPath: () => configPath,
+        getGatewayToken: () => 'gateway-token',
+        getStateDir: () => stateDir,
+        getBaseDir: () => tmpDir,
+      } as never,
+      getCoworkConfig: () => ({
+        workingDirectory: tmpDir,
+        systemPrompt: '',
+        executionMode: 'local',
+        agentEngine: 'openclaw',
+        memoryEnabled: false,
+        memoryImplicitUpdateEnabled: false,
+        memoryLlmJudgeEnabled: false,
+        memoryGuardLevel: 'balanced',
+        memoryUserMemoriesMaxItems: 100,
+        skipMissedJobs: false,
+      }),
+      isEnterprise: () => false,
+      getTelegramOpenClawConfig: () => null,
+      getDiscordOpenClawConfig: () => null,
+      getDingTalkInstances: () => [dingTalkInstance],
+      getFeishuInstances: () => [],
+      getQQInstances: () => [],
+      getWecomConfig: () => null,
+      getWecomInstances: () => [],
+      getPopoInstances: () => [],
+      getNimConfig: () => null,
+      getNeteaseBeeChanConfig: () => null,
+      getWeixinConfig: () => ({
+        enabled: true,
+        accountId: '97a130e3b62f@im.bot',
+        dmPolicy: 'open',
+        allowFrom: [],
+        debug: false,
+      }),
+      getIMSettings: () => ({
+        platformAgentBindings: {
+          'dingtalk:b8a32c47-c852-4ad2-bbfa-631797fc56ea': 'instance-agent',
+          dingtalk: 'platform-agent',
+          weixin: 'weixin-agent',
+        },
+      }),
+      getSkillsList: () => [],
+      getAgents: () => [
+        {
+          id: 'instance-agent',
+          enabled: true,
+          name: 'Instance Agent',
+          prompt: '',
+          model: 'openai/gpt-test',
+          source: 'user',
+        },
+        {
+          id: 'platform-agent',
+          enabled: true,
+          name: 'Platform Agent',
+          prompt: '',
+          model: 'openai/gpt-test',
+          source: 'user',
+        },
+        {
+          id: 'weixin-agent',
+          enabled: true,
+          name: 'Weixin Agent',
+          prompt: '',
+          model: 'openai/gpt-test',
+          source: 'user',
+        },
+      ],
+    } as never);
+
+    const result = sync.sync('platform-binding-wildcard');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.bindings).toEqual([
+      {
+        agentId: 'instance-agent',
+        match: {
+          channel: 'dingtalk-connector',
+          accountId: 'b8a32c47',
+        },
+      },
+      {
+        agentId: 'platform-agent',
+        match: {
+          channel: 'dingtalk-connector',
+          accountId: OPENCLAW_BINDING_ANY_ACCOUNT_ID,
+        },
+      },
+      {
+        agentId: 'weixin-agent',
+        match: {
+          channel: 'openclaw-weixin',
+          accountId: OPENCLAW_BINDING_ANY_ACCOUNT_ID,
+        },
+      },
+    ]);
   });
 
   test('prefers external lark for feishu without stale feishu entry and keeps bundled qqbot entry', async () => {

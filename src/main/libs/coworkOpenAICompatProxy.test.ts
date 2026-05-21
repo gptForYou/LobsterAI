@@ -1,6 +1,7 @@
-import { test, expect, describe } from 'vitest';
-import { __openAICompatProxyTestUtils, isAllowedProxyHost } from './coworkOpenAICompatProxy';
 import type http from 'http';
+import { describe,expect, test } from 'vitest';
+
+import { __openAICompatProxyTestUtils, isAllowedProxyHost } from './coworkOpenAICompatProxy';
 
 const testUtils = __openAICompatProxyTestUtils;
 
@@ -74,6 +75,14 @@ function collectToolUseStarts(events: Array<{ event: string; data: unknown }>) {
     }));
 }
 
+function collectThinkingDeltas(events: Array<{ event: string; data: unknown }>) {
+  return events
+    .filter((event) => event.event === 'content_block_delta')
+    .map((event) => event.data as Record<string, unknown>)
+    .filter((data) => (data?.delta as Record<string, unknown>)?.type === 'thinking_delta')
+    .map((data) => String((data.delta as Record<string, unknown>)?.thinking ?? ''));
+}
+
 function runResponsesSequence(sequence: Array<{ event: string; payload: unknown }>) {
   const response = createMockResponse();
   const state = testUtils.createStreamState();
@@ -96,6 +105,46 @@ function runResponsesSequence(sequence: Array<{ event: string; payload: unknown 
     toolUseStarts: collectToolUseStarts(events),
   };
 }
+
+// ==================== OpenAI Chat Completions stream tests ====================
+
+test('OpenAI stream reasoning_content is emitted as Anthropic thinking deltas', () => {
+  const response = createMockResponse();
+  const state = testUtils.createStreamState();
+
+  testUtils.processOpenAIChunk(response, state, {
+    id: 'chatcmpl_reasoning',
+    model: 'deepseek-v4-pro',
+    choices: [
+      {
+        delta: {
+          reasoning_content: 'inspect the config first.',
+        },
+      },
+    ],
+  });
+
+  testUtils.processOpenAIChunk(response, state, {
+    id: 'chatcmpl_reasoning',
+    model: 'deepseek-v4-pro',
+    choices: [
+      {
+        delta: {
+          content: 'Reading config now.',
+        },
+      },
+    ],
+  });
+
+  const events = parseSSEEvents(response.getOutput());
+  const blockStarts = events
+    .filter((event) => event.event === 'content_block_start')
+    .map((event) => event.data as Record<string, unknown>);
+
+  expect((blockStarts[0].content_block as Record<string, unknown>).type).toBe('thinking');
+  expect((blockStarts[1].content_block as Record<string, unknown>).type).toBe('text');
+  expect(collectThinkingDeltas(events)).toEqual(['inspect the config first.']);
+});
 
 // ==================== Responses stream tests ====================
 

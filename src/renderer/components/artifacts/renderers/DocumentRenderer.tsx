@@ -1,8 +1,9 @@
-import { useVirtualizer } from '@tanstack/react-virtual';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { i18nService } from '@/services/i18n';
 import type { Artifact } from '@/types/artifact';
+
+import { SheetRenderer } from './sheet/SheetRenderer';
 
 const t = (key: string) => i18nService.t(key);
 
@@ -131,7 +132,7 @@ const DocxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
     if (!wrapper || !rendered) return;
 
     const updateZoom = () => {
-      const containerWidth = wrapper.clientWidth - 48; // account for padding
+      const containerWidth = wrapper.clientWidth - 48; // account for document gutter
       if (containerWidth < DOCX_BASE_WIDTH) {
         const scale = containerWidth / DOCX_BASE_WIDTH;
         if (containerRef.current) {
@@ -168,11 +169,24 @@ const DocxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
   }
 
   return (
-    <div ref={wrapperRef} className="h-full overflow-auto p-6 bg-[#f5f5f5]">
-      <div ref={containerRef} className="docx-container mx-auto" />
+    <div ref={wrapperRef} className="h-full overflow-auto bg-[#f5f5f5]">
+      <div ref={containerRef} className="docx-container" />
       <style>{`
+        .docx-container {
+          box-sizing: border-box;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          min-width: 100%;
+          padding: 24px;
+        }
         .docx-container .docx-preview-wrapper {
           background: transparent !important;
+          display: flex !important;
+          flex-direction: column !important;
+          align-items: center !important;
+          width: max-content !important;
+          min-width: 100% !important;
         }
         .docx-container section.docx-preview {
           background: white !important;
@@ -184,263 +198,6 @@ const DocxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
           box-sizing: border-box;
         }
       `}</style>
-    </div>
-  );
-};
-
-// --- Xlsx Sub-Renderer (virtual scrolling + cell styles + CSV/TSV support) ---
-
-interface CellData {
-  v: string;
-  bgColor?: string;
-  fontColor?: string;
-  bold?: boolean;
-  colSpan?: number;
-  hidden?: boolean;
-}
-
-interface MergeRange {
-  sr: number; sc: number; er: number; ec: number;
-}
-
-interface SheetData {
-  name: string;
-  rows: CellData[][];
-  colCount: number;
-}
-
-function isCsvOrTsv(fileName: string): boolean {
-  const ext = fileName.toLowerCase();
-  return ext.endsWith('.csv') || ext.endsWith('.tsv') || ext.endsWith('.txt');
-}
-
-function applyMerges(rows: CellData[][], merges: MergeRange[]) {
-  for (const m of merges) {
-    if (rows[m.sr] && rows[m.sr][m.sc]) {
-      rows[m.sr][m.sc].colSpan = m.ec - m.sc + 1;
-    }
-    for (let r = m.sr; r <= m.er; r++) {
-      for (let c = m.sc; c <= m.ec; c++) {
-        if (r === m.sr && c === m.sc) continue;
-        if (rows[r] && rows[r][c]) {
-          rows[r][c].hidden = true;
-        }
-      }
-    }
-  }
-}
-
-const ROW_HEIGHT = 28;
-const HEADER_HEIGHT = 32;
-
-const XlsxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
-  const { data, loading, error: loadError } = useFileContent(artifact);
-  const [sheets, setSheets] = useState<SheetData[]>([]);
-  const [activeSheet, setActiveSheet] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const parentRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (loadError) { setError(loadError); return; }
-    if (!data) return;
-
-    let cancelled = false;
-
-    const parse = async () => {
-      try {
-        const XLSX = await import('xlsx');
-
-        let workbook: ReturnType<typeof XLSX.read>;
-        const fileName = artifact.fileName || artifact.filePath || '';
-
-        if (isCsvOrTsv(fileName)) {
-          const text = new TextDecoder('utf-8').decode(new Uint8Array(data));
-          workbook = XLSX.read(text, { type: 'string' });
-        } else {
-          workbook = XLSX.read(new Uint8Array(data), { type: 'array', cellStyles: true });
-        }
-
-        const parsed: SheetData[] = workbook.SheetNames.map(name => {
-          const sheet = workbook.Sheets[name];
-          const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
-          const colCount = range.e.c - range.s.c + 1;
-          const rows: CellData[][] = [];
-
-          for (let r = range.s.r; r <= range.e.r; r++) {
-            const row: CellData[] = [];
-            for (let c = range.s.c; c <= range.e.c; c++) {
-              const addr = XLSX.utils.encode_cell({ r, c });
-              const cell = sheet[addr];
-              if (cell) {
-                const cellData: CellData = { v: cell.w ?? String(cell.v ?? '') };
-                if (cell.s) {
-                  if (cell.s.fgColor?.rgb) cellData.bgColor = `#${cell.s.fgColor.rgb}`;
-                  if (cell.s.color?.rgb) cellData.fontColor = `#${cell.s.color.rgb}`;
-                  if (cell.s.bold) cellData.bold = true;
-                }
-                row.push(cellData);
-              } else {
-                row.push({ v: '' });
-              }
-            }
-            rows.push(row);
-          }
-
-          const merges: MergeRange[] = (sheet['!merges'] || []).map((m: { s: { r: number; c: number }; e: { r: number; c: number } }) => ({
-            sr: m.s.r - range.s.r, sc: m.s.c - range.s.c,
-            er: m.e.r - range.s.r, ec: m.e.c - range.s.c,
-          }));
-          applyMerges(rows, merges);
-
-          return { name, rows, colCount };
-        });
-
-        if (!cancelled) setSheets(parsed);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      }
-    };
-
-    parse();
-    return () => { cancelled = true; };
-  }, [data, loadError, artifact.fileName, artifact.filePath]);
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full text-red-500 text-sm p-4">
-        {t('artifactDocumentError')}: {error}
-      </div>
-    );
-  }
-
-  if (loading || sheets.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-muted text-sm">
-        {t('artifactDocumentLoading')}
-      </div>
-    );
-  }
-
-  const currentSheet = sheets[activeSheet];
-  const headerRow = currentSheet.rows[0];
-  const bodyRows = currentSheet.rows.slice(1);
-  const colCount = currentSheet.colCount;
-  const COL_WIDTH = Math.max(100, Math.min(200, Math.floor(800 / colCount)));
-  const totalWidth = COL_WIDTH * colCount;
-
-  return (
-    <div className="h-full flex flex-col overflow-hidden bg-white text-[#383a42]">
-      {/* Sheet tabs */}
-      {sheets.length > 1 && (
-        <div className="flex items-center gap-1 px-2 py-1 border-b border-[#e0e0e0] shrink-0 overflow-x-auto">
-          {sheets.map((sheet, i) => (
-            <button
-              key={i}
-              onClick={() => setActiveSheet(i)}
-              className={`px-2 py-0.5 text-xs rounded whitespace-nowrap transition-colors ${
-                i === activeSheet
-                  ? 'bg-[#217346]/10 text-[#217346] font-medium'
-                  : 'text-[#666] hover:text-[#383a42] hover:bg-[#f0f2f5]'
-              }`}
-            >
-              {sheet.name}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Scrollable table area */}
-      <div ref={parentRef} className="flex-1 overflow-auto">
-        <div style={{ width: totalWidth, minWidth: '100%' }}>
-          {/* Header */}
-          {headerRow && (
-            <div className="flex sticky top-0 z-10 border-b border-[#e0e0e0] bg-[#f0f2f5]" style={{ height: HEADER_HEIGHT }}>
-              {headerRow.map((cell, i) => {
-                if (cell.hidden) return null;
-                const span = cell.colSpan || 1;
-                return (
-                  <div
-                    key={i}
-                    className="px-3 flex items-center text-xs font-medium text-[#383a42] border-r border-[#e0e0e0] last:border-r-0 truncate"
-                    style={{
-                      width: COL_WIDTH * span,
-                      minWidth: COL_WIDTH * span,
-                      backgroundColor: cell.bgColor || undefined,
-                      color: cell.fontColor || undefined,
-                      fontWeight: cell.bold ? 700 : 600,
-                    }}
-                    title={cell.v}
-                  >
-                    {cell.v}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Virtual scrolling body */}
-          <VirtualRows rows={bodyRows} parentRef={parentRef} colWidth={COL_WIDTH} />
-        </div>
-      </div>
-
-      {/* Row count */}
-      <div className="px-3 py-1 text-xs text-[#999] border-t border-[#e0e0e0] shrink-0">
-        {currentSheet.rows.length.toLocaleString()} {t('artifactRowCount')}
-      </div>
-    </div>
-  );
-};
-
-const VirtualRows: React.FC<{
-  rows: CellData[][];
-  parentRef: React.RefObject<HTMLDivElement | null>;
-  colWidth: number;
-}> = ({ rows, parentRef, colWidth }) => {
-  const rowVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 20,
-  });
-
-  return (
-    <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}>
-      {rowVirtualizer.getVirtualItems().map(virtualRow => {
-        const row = rows[virtualRow.index];
-        return (
-          <div
-            key={virtualRow.index}
-            className={`flex items-center border-b border-[#e0e0e0]/50 text-xs ${virtualRow.index % 2 === 0 ? 'bg-white' : 'bg-[#f9fafb]'}`}
-            style={{
-              position: 'absolute',
-              top: 0,
-              transform: `translateY(${virtualRow.start}px)`,
-              height: ROW_HEIGHT,
-            }}
-          >
-            {row.map((cell, ci) => {
-              if (cell.hidden) return null;
-              const span = cell.colSpan || 1;
-              return (
-                <div
-                  key={ci}
-                  className="px-3 flex items-center border-r border-[#e0e0e0]/30 last:border-r-0 truncate h-full"
-                  style={{
-                    width: colWidth * span,
-                    minWidth: colWidth * span,
-                    backgroundColor: cell.bgColor || undefined,
-                    color: cell.fontColor || undefined,
-                    fontWeight: cell.bold ? 700 : undefined,
-                  }}
-                  title={cell.v}
-                >
-                  {cell.v}
-                </div>
-              );
-            })}
-          </div>
-        );
-      })}
     </div>
   );
 };
@@ -614,17 +371,274 @@ const PdfPageCanvas: React.FC<{
 
 // --- Pptx Sub-Renderer ---
 
+const PPTX_IMAGE_RELATIONSHIP_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
+const PPTX_MEDIA_DIR = 'ppt/media/';
+const PPTX_DRAWING_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+const PPTX_PRESENTATION_NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+const PPTX_IMAGE_CONTENT_TYPES: Record<string, string> = {
+  bmp: 'image/bmp',
+  emf: 'image/x-emf',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  svg: 'image/svg+xml',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+  wmf: 'image/x-wmf',
+};
+
+function getRelationshipSourceDir(relsPath: string): string {
+  const sourcePath = relsPath.replace('/_rels/', '/').replace(/\.rels$/, '');
+  const lastSlash = sourcePath.lastIndexOf('/');
+  return lastSlash >= 0 ? sourcePath.slice(0, lastSlash) : '';
+}
+
+function normalizeZipPath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.join('/');
+}
+
+function resolveRelationshipTarget(relsPath: string, target: string): string {
+  const decodedTarget = decodeRelationshipTarget(target);
+  if (decodedTarget.startsWith('/')) return normalizeZipPath(decodedTarget.slice(1));
+
+  const sourceDir = getRelationshipSourceDir(relsPath);
+  return normalizeZipPath(sourceDir ? `${sourceDir}/${decodedTarget}` : decodedTarget);
+}
+
+function getRelativeZipPath(fromDir: string, toPath: string): string {
+  const fromParts = fromDir ? fromDir.split('/').filter(Boolean) : [];
+  const toParts = toPath.split('/').filter(Boolean);
+
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+
+  return [...fromParts.map(() => '..'), ...toParts].join('/');
+}
+
+function getFileExtension(path: string): string {
+  const basename = path.slice(path.lastIndexOf('/') + 1);
+  const dotIndex = basename.lastIndexOf('.');
+  return dotIndex >= 0 ? basename.slice(dotIndex).toLowerCase() : '';
+}
+
+function decodeRelationshipTarget(target: string): string {
+  try {
+    return decodeURI(target);
+  } catch {
+    return target;
+  }
+}
+
+function findZipPath(zip: { files: Record<string, { dir?: boolean }>; file(path: string): unknown }, path: string): string | null {
+  if (zip.file(path)) return path;
+
+  const lowerPath = path.toLowerCase();
+  return Object.keys(zip.files).find(candidate => !zip.files[candidate].dir && candidate.toLowerCase() === lowerPath) || null;
+}
+
+function detectImageExtension(bytes: Uint8Array, fallbackExtension: string): string {
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return '.png';
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return '.jpg';
+  }
+  if (
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38
+  ) {
+    return '.gif';
+  }
+  if (bytes[0] === 0x42 && bytes[1] === 0x4d) {
+    return '.bmp';
+  }
+  return fallbackExtension.toLowerCase();
+}
+
+function createPptxPreviewMediaPath(zip: { file(path: string): unknown }, index: number, extension: string): string {
+  const normalizedExtension = extension.startsWith('.') ? extension : `.${extension}`;
+  let candidate = `${PPTX_MEDIA_DIR}image_lobster_${index}${normalizedExtension}`;
+  let suffix = 1;
+
+  while (zip.file(candidate)) {
+    candidate = `${PPTX_MEDIA_DIR}image_lobster_${index}_${suffix}${normalizedExtension}`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
+
+function ensureContentTypeDefaults(contentTypesXml: string, extensions: Set<string>): string {
+  const defaults = new Set<string>();
+  contentTypesXml.replace(/<Default\b[^>]*\bExtension="([^"]+)"/g, (_entry, extension: string) => {
+    defaults.add(extension.toLowerCase());
+    return _entry;
+  });
+
+  const additions = Array.from(extensions)
+    .map(extension => extension.replace(/^\./, '').toLowerCase())
+    .filter(extension => PPTX_IMAGE_CONTENT_TYPES[extension] && !defaults.has(extension))
+    .map(extension => (
+      `<Default Extension="${extension}" ContentType="${PPTX_IMAGE_CONTENT_TYPES[extension]}"/>`
+    ));
+
+  if (additions.length === 0) return contentTypesXml;
+
+  const insertion = additions.join('');
+  if (contentTypesXml.includes('<Override')) {
+    return contentTypesXml.replace('<Override', `${insertion}<Override`);
+  }
+
+  return contentTypesXml.replace('</Types>', `${insertion}</Types>`);
+}
+
+async function getPptxSlideSize(zip: { file(path: string): { async(type: 'string'): Promise<string> } | null }): Promise<{ cx: string; cy: string }> {
+  const defaultSize = { cx: '9144000', cy: '5143500' };
+  const presentationFile = zip.file('ppt/presentation.xml');
+  if (!presentationFile) return defaultSize;
+
+  const presentationXml = await presentationFile.async('string');
+  const doc = new DOMParser().parseFromString(presentationXml, 'application/xml');
+  const slideSize = doc.getElementsByTagName('p:sldSz')[0];
+  if (!slideSize) return defaultSize;
+
+  return {
+    cx: slideSize.getAttribute('cx') || defaultSize.cx,
+    cy: slideSize.getAttribute('cy') || defaultSize.cy,
+  };
+}
+
+function getSlidePathFromRelsPath(relsPath: string): string | null {
+  if (!relsPath.startsWith('ppt/slides/_rels/') || !relsPath.endsWith('.rels')) return null;
+  return relsPath.replace('ppt/slides/_rels/', 'ppt/slides/').replace(/\.rels$/, '');
+}
+
+function getNextSlideShapeId(doc: Document): string {
+  const ids = Array.from(doc.getElementsByTagName('p:cNvPr'))
+    .map(node => Number(node.getAttribute('id') || '0'))
+    .filter(Number.isFinite);
+  return String(Math.max(0, ...ids) + 1);
+}
+
+function hasBackgroundFallback(doc: Document, relId: string): boolean {
+  return Array.from(doc.getElementsByTagName('p:cNvPr')).some(node => (
+    node.getAttribute('name') === `LobsterAI Background Fallback ${relId}`
+  ));
+}
+
+function createElement(doc: Document, namespace: string, name: string, attrs: Record<string, string> = {}): Element {
+  const element = doc.createElementNS(namespace, name);
+  Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, value));
+  return element;
+}
+
+function createPictureBlipFill(doc: Document, backgroundBlipFill: Element): Element {
+  const pictureBlipFill = createElement(doc, PPTX_PRESENTATION_NS, 'p:blipFill');
+  Array.from(backgroundBlipFill.childNodes).forEach(child => {
+    pictureBlipFill.appendChild(child.cloneNode(true));
+  });
+
+  return pictureBlipFill;
+}
+
+function createBackgroundFallbackPic(doc: Document, relId: string, blipFill: Element, size: { cx: string; cy: string }): Element {
+  const pic = createElement(doc, PPTX_PRESENTATION_NS, 'p:pic');
+  const nvPicPr = createElement(doc, PPTX_PRESENTATION_NS, 'p:nvPicPr');
+  const cNvPr = createElement(doc, PPTX_PRESENTATION_NS, 'p:cNvPr', {
+    id: getNextSlideShapeId(doc),
+    name: `LobsterAI Background Fallback ${relId}`,
+  });
+  const cNvPicPr = createElement(doc, PPTX_PRESENTATION_NS, 'p:cNvPicPr');
+  const nvPr = createElement(doc, PPTX_PRESENTATION_NS, 'p:nvPr');
+  nvPicPr.append(cNvPr, cNvPicPr, nvPr);
+
+  const fallbackBlipFill = createPictureBlipFill(doc, blipFill);
+  const spPr = createElement(doc, PPTX_PRESENTATION_NS, 'p:spPr');
+  const xfrm = createElement(doc, PPTX_DRAWING_NS, 'a:xfrm');
+  const off = createElement(doc, PPTX_DRAWING_NS, 'a:off', { x: '0', y: '0' });
+  const ext = createElement(doc, PPTX_DRAWING_NS, 'a:ext', size);
+  const prstGeom = createElement(doc, PPTX_DRAWING_NS, 'a:prstGeom', { prst: 'rect' });
+  const avLst = createElement(doc, PPTX_DRAWING_NS, 'a:avLst');
+
+  xfrm.append(off, ext);
+  prstGeom.append(avLst);
+  spPr.append(xfrm, prstGeom);
+  pic.append(nvPicPr, fallbackBlipFill, spPr);
+
+  return pic;
+}
+
+async function addBackgroundImageFallbacks(
+  zip: { file(path: string, data?: string): { async(type: 'string'): Promise<string> } | null },
+  relsToFallbackRelIds: Map<string, Set<string>>,
+): Promise<void> {
+  if (relsToFallbackRelIds.size === 0) return;
+
+  const slideSize = await getPptxSlideSize(zip);
+
+  for (const [relsPath, relIds] of relsToFallbackRelIds) {
+    const slidePath = getSlidePathFromRelsPath(relsPath);
+    if (!slidePath) continue;
+
+    const slideFile = zip.file(slidePath);
+    if (!slideFile) continue;
+
+    const slideXml = await slideFile.async('string');
+    const doc = new DOMParser().parseFromString(slideXml, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length > 0) continue;
+
+    const spTree = doc.getElementsByTagName('p:spTree')[0];
+    const grpSpPr = doc.getElementsByTagName('p:grpSpPr')[0];
+    if (!spTree || !grpSpPr) continue;
+
+    let changed = false;
+    const backgroundBlipFills = Array.from(doc.getElementsByTagName('p:bgPr'))
+      .map(bgPr => bgPr.getElementsByTagName('a:blipFill')[0])
+      .filter((blipFill): blipFill is Element => Boolean(blipFill));
+
+    for (const blipFill of backgroundBlipFills) {
+      const blip = blipFill.getElementsByTagName('a:blip')[0];
+      const relId = blip?.getAttribute('r:embed');
+      if (!relId || !relIds.has(relId) || hasBackgroundFallback(doc, relId)) continue;
+
+      const fallbackPic = createBackgroundFallbackPic(doc, relId, blipFill, slideSize);
+      spTree.insertBefore(fallbackPic, grpSpPr.nextSibling);
+      changed = true;
+    }
+
+    if (changed) {
+      zip.file(slidePath, new XMLSerializer().serializeToString(doc));
+    }
+  }
+}
+
 /**
- * Fix PPTX files generated by PptxGenJS:
+ * Fix PPTX files before passing them to pptx-preview:
  * 1. Re-compress with Deflate (some are stored uncompressed)
  * 2. Remove Content_Types.xml entries that reference non-existent files
+ * 3. Copy non-standard media names to ppt/media/image* because pptx-preview only preloads that prefix
  */
 async function fixPptxData(data: ArrayBuffer): Promise<ArrayBuffer> {
   const JSZip = (await import('jszip')).default;
   const zip = await JSZip.loadAsync(data);
 
-  // Fix Content_Types.xml: remove Override entries for missing files
+  // Fix Content_Types.xml: remove Override entries for missing files.
   const ctFile = zip.file('[Content_Types].xml');
+  let contentTypesXml: string | null = null;
   if (ctFile) {
     let ct = await ctFile.async('string');
     const overrideRe = /<Override[^>]+PartName="([^"]+)"[^>]*\/>/g;
@@ -640,22 +654,100 @@ async function fixPptxData(data: ArrayBuffer): Promise<ArrayBuffer> {
     for (const entry of toRemove) {
       ct = ct.replace(entry, '');
     }
-    zip.file('[Content_Types].xml', ct);
+    contentTypesXml = ct;
+  }
+
+  const mediaPathMap = new Map<string, string>();
+  const addedMediaExtensions = new Set<string>();
+  const backgroundFallbackRelIds = new Map<string, Set<string>>();
+  let normalizedMediaIndex = 1;
+
+  for (const relsPath of Object.keys(zip.files).filter(path => path.endsWith('.rels'))) {
+    const relsFile = zip.file(relsPath);
+    if (!relsFile) continue;
+
+    const relsXml = await relsFile.async('string');
+    const doc = new DOMParser().parseFromString(relsXml, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length > 0) continue;
+
+    const sourceDir = getRelationshipSourceDir(relsPath);
+    const relationships = Array.from(doc.getElementsByTagName('Relationship'));
+    let changed = false;
+
+    for (const relationship of relationships) {
+      if (relationship.getAttribute('Type') !== PPTX_IMAGE_RELATIONSHIP_TYPE) continue;
+      if (relationship.getAttribute('TargetMode') === 'External') continue;
+
+      const target = relationship.getAttribute('Target');
+      if (!target) continue;
+
+      const resolvedTarget = resolveRelationshipTarget(relsPath, target);
+      const mediaPath = findZipPath(zip, resolvedTarget);
+      if (!mediaPath || !mediaPath.toLowerCase().startsWith(PPTX_MEDIA_DIR)) continue;
+
+      const basename = mediaPath.slice(PPTX_MEDIA_DIR.length);
+      if (mediaPath.startsWith(PPTX_MEDIA_DIR) && basename.startsWith('image')) {
+        const normalizedTarget = getRelativeZipPath(sourceDir, mediaPath);
+        if (normalizedTarget !== target) {
+          relationship.setAttribute('Target', normalizedTarget);
+          changed = true;
+        }
+        continue;
+      }
+
+      const mediaFile = zip.file(mediaPath);
+      if (!mediaFile) continue;
+
+      let normalizedTarget = mediaPathMap.get(mediaPath);
+      if (!normalizedTarget) {
+        const mediaData = await mediaFile.async('arraybuffer');
+        const extension = detectImageExtension(new Uint8Array(mediaData), getFileExtension(mediaPath));
+        normalizedTarget = createPptxPreviewMediaPath(zip, normalizedMediaIndex, extension || '.png');
+        normalizedMediaIndex += 1;
+        mediaPathMap.set(mediaPath, normalizedTarget);
+        addedMediaExtensions.add(getFileExtension(normalizedTarget));
+        zip.file(normalizedTarget, mediaData);
+      }
+
+      const relId = relationship.getAttribute('Id');
+      if (relId) {
+        if (!backgroundFallbackRelIds.has(relsPath)) {
+          backgroundFallbackRelIds.set(relsPath, new Set());
+        }
+        backgroundFallbackRelIds.get(relsPath)?.add(relId);
+      }
+
+      relationship.setAttribute('Target', getRelativeZipPath(sourceDir, normalizedTarget));
+      changed = true;
+    }
+
+    if (changed) {
+      zip.file(relsPath, new XMLSerializer().serializeToString(doc));
+    }
+  }
+
+  await addBackgroundImageFallbacks(zip, backgroundFallbackRelIds);
+
+  if (contentTypesXml !== null) {
+    zip.file('[Content_Types].xml', ensureContentTypeDefaults(contentTypesXml, addedMediaExtensions));
   }
 
   // Re-generate with Deflate compression
   return await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
 }
 
-const PptxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
+const LegacyPptxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
   const { data, loading, error: loadError } = useFileContent(artifact);
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const mainPreviewerRef = useRef<{ slideCount?: number; destroy?: () => void } | null>(null);
+  const thumbnailPreviewerRef = useRef<{ slideCount?: number; destroy?: () => void } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rendered, setRendered] = useState(false);
   const [slideCount, setSlideCount] = useState(0);
 
   const PPTX_RENDER_WIDTH = 600;
+  const PPTX_THUMBNAIL_WIDTH = 150;
 
   useEffect(() => {
     if (loadError) { setError(loadError); return; }
@@ -666,41 +758,159 @@ const PptxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
     const render = async () => {
       try {
         const pptxPreview = await import('pptx-preview');
-        if (cancelled) return;
+        const iframe = iframeRef.current;
+        const iframeDoc = iframe?.contentDocument || iframe?.contentWindow?.document;
+        if (cancelled || !iframeDoc) return;
 
         // Fix the PPTX data before passing to pptx-preview
         const fixedData = await fixPptxData(data);
         if (cancelled) return;
 
-        const offscreen = document.createElement('div');
-        offscreen.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:600px;';
-        document.body.appendChild(offscreen);
+        mainPreviewerRef.current?.destroy?.();
+        thumbnailPreviewerRef.current?.destroy?.();
+        mainPreviewerRef.current = null;
+        thumbnailPreviewerRef.current = null;
+        setRendered(false);
 
-        const previewer = pptxPreview.init(offscreen, { width: PPTX_RENDER_WIDTH, mode: 'list' });
-        await previewer.preview(fixedData);
+        iframeDoc.open();
+        iframeDoc.write(`<!DOCTYPE html><html><head><style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          html, body { width: 100%; min-height: 100%; background: #f3f4f6; }
+          body { padding: 16px; overflow-y: auto; }
+          #pptx-layout { width: 100%; min-height: 100px; }
+          #pptx-thumbnails { display: none; }
+          #pptx-main { width: 100%; min-width: 0; }
+          .pptx-preview-wrapper { background: transparent !important; width: 100% !important; max-width: 100% !important; height: auto !important; overflow: visible !important; }
+          .pptx-preview-wrapper > div { margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); border-radius: 4px; overflow: hidden; }
+          .pptx-preview-wrapper > div:last-child { margin-bottom: 0; }
+          canvas { width: 100% !important; height: auto !important; display: block; }
+          @media (min-width: 760px) {
+            html, body { height: 100%; min-height: 100%; overflow: hidden; }
+            body { padding: 16px; }
+            #pptx-layout {
+              display: grid;
+              grid-template-columns: 168px minmax(0, 1fr);
+              gap: 16px;
+              height: 100%;
+              min-height: 0;
+            }
+            #pptx-thumbnails {
+              display: block;
+              min-height: 0;
+              overflow-y: auto;
+              padding: 2px 4px 2px 0;
+            }
+            #pptx-main {
+              min-height: 0;
+              overflow: auto;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 12px;
+            }
+            #pptx-main .pptx-preview-wrapper {
+              max-width: 600px !important;
+              margin: 0 auto !important;
+            }
+            #pptx-main .pptx-preview-wrapper > div {
+              display: none;
+              width: 100% !important;
+              margin: 0 !important;
+              box-shadow: 0 4px 18px rgba(0,0,0,0.18);
+            }
+            #pptx-main .pptx-preview-wrapper > div.is-active-slide {
+              display: block;
+            }
+            #pptx-thumbnails .pptx-preview-wrapper > div {
+              position: relative;
+              width: 100% !important;
+              margin: 0 0 10px !important;
+              border: 2px solid transparent;
+              border-radius: 6px;
+              box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+              cursor: pointer;
+              opacity: 0.82;
+              transition: border-color 120ms ease, opacity 120ms ease;
+            }
+            #pptx-thumbnails .pptx-preview-wrapper > div::before {
+              content: attr(data-slide-number);
+              position: absolute;
+              left: 6px;
+              top: 5px;
+              z-index: 2;
+              min-width: 18px;
+              height: 18px;
+              border-radius: 9px;
+              background: rgba(17,24,39,0.72);
+              color: #fff;
+              font: 11px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+              text-align: center;
+            }
+            #pptx-thumbnails .pptx-preview-wrapper > div.is-active-thumbnail {
+              border-color: #3b82f6;
+              opacity: 1;
+            }
+          }
+        </style></head><body><div id="pptx-layout"><aside id="pptx-thumbnails"></aside><main id="pptx-main"></main></div></body></html>`);
+        iframeDoc.close();
 
-        if (cancelled) { document.body.removeChild(offscreen); return; }
+        const mainRoot = iframeDoc.getElementById('pptx-main');
+        const thumbnailRoot = iframeDoc.getElementById('pptx-thumbnails');
+        if (!mainRoot || !thumbnailRoot) {
+          setError('render_failed');
+          return;
+        }
 
-        const count = previewer.slideCount || 0;
+        const mainPreviewer = pptxPreview.init(mainRoot, { width: PPTX_RENDER_WIDTH, mode: 'list' });
+        const thumbnailPreviewer = pptxPreview.init(thumbnailRoot, { width: PPTX_THUMBNAIL_WIDTH, mode: 'list' });
+        mainPreviewerRef.current = mainPreviewer;
+        thumbnailPreviewerRef.current = thumbnailPreviewer;
+        await mainPreviewer.preview(fixedData);
+        await thumbnailPreviewer.preview(fixedData.slice(0));
+
+        if (cancelled) return;
+
+        const mainSlides = Array.from(mainRoot.querySelectorAll('.pptx-preview-wrapper > div'));
+        const thumbnailSlides = Array.from(thumbnailRoot.querySelectorAll('.pptx-preview-wrapper > div'));
+        const count = mainPreviewer.slideCount || mainSlides.length || thumbnailSlides.length || 0;
         setSlideCount(count);
 
-        const renderedHtml = offscreen.innerHTML;
-        document.body.removeChild(offscreen);
+        if (count > 0 && !cancelled) {
+          let selectedIndex = 0;
+          const slideLabelTemplate = t('artifactSlideLabel');
+          const setActiveSlide = (index: number) => {
+            selectedIndex = Math.max(0, Math.min(index, count - 1));
+            mainSlides.forEach((slide, slideIndex) => {
+              slide.classList.toggle('is-active-slide', slideIndex === selectedIndex);
+            });
+            thumbnailSlides.forEach((slide, slideIndex) => {
+              const isActive = slideIndex === selectedIndex;
+              slide.classList.toggle('is-active-thumbnail', isActive);
+              if (isActive) {
+                slide.scrollIntoView({ block: 'nearest' });
+              }
+            });
+          };
 
-        if (count > 0 && renderedHtml.length > 200 && iframeRef.current && !cancelled) {
-          const iframeDoc = iframeRef.current.contentDocument || iframeRef.current.contentWindow?.document;
-          if (iframeDoc) {
-            iframeDoc.open();
-            iframeDoc.write(`<!DOCTYPE html><html><head><style>
-              * { margin: 0; padding: 0; box-sizing: border-box; }
-              body { background: #f3f4f6; padding: 16px; overflow-y: auto; }
-              .pptx-preview-wrapper { background: transparent !important; width: 100% !important; max-width: 100% !important; height: auto !important; overflow: visible !important; }
-              .pptx-preview-wrapper > div { margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); border-radius: 4px; overflow: hidden; }
-              .pptx-preview-wrapper > div:last-child { margin-bottom: 0; }
-              canvas { width: 100% !important; height: auto !important; display: block; }
-            </style></head><body>${renderedHtml}</body></html>`);
-            iframeDoc.close();
-          }
+          mainSlides.forEach((slide, index) => {
+            slide.classList.toggle('is-active-slide', index === selectedIndex);
+          });
+          thumbnailSlides.forEach((slide, index) => {
+            const slideNumber = String(index + 1);
+            slide.setAttribute('data-slide-number', slideNumber);
+            slide.setAttribute('role', 'button');
+            slide.setAttribute('tabindex', '0');
+            slide.setAttribute('aria-label', slideLabelTemplate.replace('{n}', slideNumber));
+            slide.addEventListener('click', () => setActiveSlide(index));
+            slide.addEventListener('keydown', event => {
+              const key = (event as KeyboardEvent).key;
+              if (key === 'Enter' || key === ' ') {
+                event.preventDefault();
+                setActiveSlide(index);
+              }
+            });
+            slide.classList.toggle('is-active-thumbnail', index === selectedIndex);
+          });
           setRendered(true);
         } else {
           setError('render_failed');
@@ -711,7 +921,13 @@ const PptxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
     };
 
     render();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      mainPreviewerRef.current?.destroy?.();
+      thumbnailPreviewerRef.current?.destroy?.();
+      mainPreviewerRef.current = null;
+      thumbnailPreviewerRef.current = null;
+    };
   }, [data, loadError]);
 
   // Adaptive zoom for PPTX container
@@ -752,7 +968,7 @@ const PptxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {slideCount > 0 && (
-        <div className="px-3 py-1.5 text-xs text-muted border-b border-border shrink-0">
+        <div className="px-4 py-1.5 text-xs text-muted border-b border-border shrink-0">
           {t('artifactSlideCount').replace('{count}', String(slideCount))}
         </div>
       )}
@@ -771,6 +987,10 @@ const PptxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
       </div>
     </div>
   );
+};
+
+const PptxSubRenderer: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
+  return <LegacyPptxSubRenderer artifact={artifact} />;
 };
 
 // HTML slides fallback: load slideN.html files from the same directory
@@ -975,7 +1195,7 @@ const DocumentRenderer: React.FC<DocumentRendererProps> = ({ artifact }) => {
     case '.xls':
     case '.csv':
     case '.tsv':
-      return <XlsxSubRenderer artifact={artifact} />;
+      return <SheetRenderer artifact={artifact} />;
     case '.pdf':
       return <PdfSubRenderer artifact={artifact} />;
     case '.pptx':

@@ -47,20 +47,20 @@ LobsterAI processAssistant/handleChatDelta:
 
 ### 场景 A: 群聊未 @ 提及
 
-**Given** 用户在某个 IM 群聊中开启了 LobsterAI 机器人  
-**When** 群内其他成员发送了一条未 @ 机器人的消息  
+**Given** 用户在某个 IM 群聊中开启了 LobsterAI 机器人
+**When** 群内其他成员发送了一条未 @ 机器人的消息
 **Then** 会话窗口中不应出现任何 AI 回复（包括 "NO_REPLY" 或 "NO_"）
 
 ### 场景 B: 飞书文档评论已由工具处理
 
-**Given** 用户在飞书文档评论中 @ 了机器人请求修改文档  
-**When** AI 通过 `feishu_doc` 工具完成了修改，并通过 `reply_comment` 回复了用户  
+**Given** 用户在飞书文档评论中 @ 了机器人请求修改文档
+**When** AI 通过 `feishu_doc` 工具完成了修改，并通过 `reply_comment` 回复了用户
 **Then** 会话窗口中不应显示 "NO_REPLY" 文本（工具已完成了用户可见的回复）
 
 ### 场景 C: 模型输出被截断
 
-**Given** AI 开始输出 `NO_REPLY`，但流式输出被意外终止（如 token 限制）  
-**When** 最终到达的文本仅包含前缀片段（如 `"NO_"`）  
+**Given** AI 开始输出 `NO_REPLY`，但流式输出被意外终止（如 token 限制）
+**When** 最终到达的文本仅包含前缀片段（如 `"NO_"`）
 **Then** 会话窗口中不应显示这些前缀片段
 
 ## 3. 功能需求

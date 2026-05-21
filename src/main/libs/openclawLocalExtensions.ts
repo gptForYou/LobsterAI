@@ -79,7 +79,7 @@ const findLocalExtensionsSourceDir = (): string | null => {
   return null;
 };
 
-const findBundledExtensionsDir = (): string | null => {
+export const findBundledExtensionsDir = (): string | null => {
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, 'cfmind', THIRD_PARTY_EXTENSIONS_DIR)]
     : [
@@ -200,17 +200,18 @@ export const hasBundledOpenClawExtension = (extensionId: string): boolean => {
  * in a separate `extensions/` directory — NOT in `dist/extensions/` which is
  * reserved for runtime-bundled plugins that satisfy the bundled-channel-entry
  * contract.  The gateway discovers these via `plugins.load.paths`.
+ *
+ * The directory is located under userData so that user-installed plugins
+ * persist across application upgrades / reinstalls.
  */
 export const findThirdPartyExtensionsDir = (): string | null => {
-  const dir = findBundledExtensionsDir();
-  if (!dir) return null;
-  // Resolve symlinks so the path matches what the gateway sees after
-  // resolving the `current` → `win-x64` (or other platform) junction.
+  const dir = path.join(app.getPath('userData'), THIRD_PARTY_EXTENSIONS_DIR);
   try {
-    return fs.realpathSync(dir);
+    fs.mkdirSync(dir, { recursive: true });
   } catch {
-    return dir;
+    return null;
   }
+  return dir;
 };
 
 /**

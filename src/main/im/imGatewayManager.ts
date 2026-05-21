@@ -39,6 +39,8 @@ import {
 } from './types';
 
 const DINGTALK_OPENCLAW_CHANNEL = 'dingtalk-connector';
+const WEIXIN_OPENCLAW_CHANNEL = 'openclaw-weixin';
+const WEIXIN_ALREADY_CONNECTED_MESSAGE = '已连接过此 OpenClaw';
 
 const CONNECTIVITY_TIMEOUT_MS = 10_000;
 const INBOUND_ACTIVITY_WARN_AFTER_MS = 2 * 60 * 1000;
@@ -55,6 +57,34 @@ interface OpenClawSessionsListResult {
   sessions?: unknown[];
 }
 
+interface WeixinQrLoginStartResult {
+  qrDataUrl?: string;
+  message: string;
+  sessionKey?: string;
+}
+
+interface WeixinQrLoginWaitResult {
+  connected: boolean;
+  message: string;
+  accountId?: string;
+  alreadyConnected?: boolean;
+}
+
+interface OpenClawChannelAccountSnapshot {
+  accountId?: unknown;
+  running?: unknown;
+  configured?: unknown;
+  enabled?: unknown;
+  lastError?: unknown;
+  lastStartAt?: unknown;
+  lastInboundAt?: unknown;
+  lastOutboundAt?: unknown;
+}
+
+interface OpenClawChannelsStatusResult {
+  channelAccounts?: Record<string, unknown>;
+}
+
 interface TelegramGetMeResponse {
   ok?: boolean;
   result?: {
@@ -66,6 +96,22 @@ interface TelegramGetMeResponse {
 interface DiscordUserResponse {
   username?: string;
   discriminator?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function isWeixinAlreadyConnectedMessage(message?: string): boolean {
+  return Boolean(message?.includes(WEIXIN_ALREADY_CONNECTED_MESSAGE));
 }
 
 export interface IMGatewayManagerOptions {
@@ -500,6 +546,7 @@ export class IMGatewayManager extends EventEmitter {
       },
       weixin: {
         connected: Boolean(config.weixin?.enabled),
+        accountId: config.weixin?.accountId?.trim() || null,
         startedAt: null as number | null,
         lastError: null as string | null,
         lastInboundAt: null as number | null,
@@ -530,6 +577,86 @@ export class IMGatewayManager extends EventEmitter {
         })),
       },
     };
+  }
+
+  async getStatusWithOpenClawRuntime(): Promise<IMGatewayStatus> {
+    const status = this.getStatus();
+    const client = this.getOpenClawGatewayClient?.();
+    if (!client) return status;
+
+    try {
+      const runtimeStatus = await this.requestOpenClawChannelsStatus(client);
+      const weixinAccount = this.pickWeixinAccountSnapshot(runtimeStatus, status.weixin.accountId);
+      if (!weixinAccount) return status;
+
+      const configured = weixinAccount.configured === true;
+      const running = weixinAccount.running === true;
+      const enabled = weixinAccount.enabled !== false;
+      const accountId = readString(weixinAccount.accountId) ?? status.weixin.accountId ?? null;
+      status.weixin = {
+        ...status.weixin,
+        accountId,
+        connected: running || (enabled && configured && status.weixin.connected),
+        startedAt: readNumber(weixinAccount.lastStartAt),
+        lastError: readString(weixinAccount.lastError),
+        lastInboundAt: readNumber(weixinAccount.lastInboundAt),
+        lastOutboundAt: readNumber(weixinAccount.lastOutboundAt),
+      };
+    } catch (error) {
+      console.debug('[IMGatewayManager] failed to enrich Weixin status from OpenClaw runtime:', error);
+    }
+
+    return status;
+  }
+
+  private async requestOpenClawChannelsStatus(
+    client: GatewayClientLike,
+  ): Promise<OpenClawChannelsStatusResult> {
+    return client.request<OpenClawChannelsStatusResult>(
+      'channels.status',
+      { probe: false, timeoutMs: 2000 },
+    );
+  }
+
+  private getWeixinAccountSnapshots(
+    runtimeStatus: OpenClawChannelsStatusResult,
+  ): OpenClawChannelAccountSnapshot[] {
+    const rawAccounts = runtimeStatus.channelAccounts?.[WEIXIN_OPENCLAW_CHANNEL];
+    if (!Array.isArray(rawAccounts)) return [];
+
+    return rawAccounts
+      .filter(isRecord)
+      .map((account) => account as OpenClawChannelAccountSnapshot);
+  }
+
+  private pickWeixinAccountSnapshot(
+    runtimeStatus: OpenClawChannelsStatusResult,
+    preferredAccountId?: string | null,
+  ): OpenClawChannelAccountSnapshot | null {
+    const accounts = this.getWeixinAccountSnapshots(runtimeStatus);
+    if (accounts.length === 0) return null;
+
+    const preferred = preferredAccountId?.trim();
+    if (preferred) {
+      const matched = accounts.find((account) => readString(account.accountId) === preferred);
+      if (matched) return matched;
+    }
+
+    return accounts.find((account) => account.running === true)
+      ?? accounts.find((account) => account.configured === true)
+      ?? accounts[0];
+  }
+
+  private async resolveWeixinRuntimeAccountId(client: GatewayClientLike): Promise<string | undefined> {
+    try {
+      const runtimeStatus = await this.requestOpenClawChannelsStatus(client);
+      const preferred = this.getConfig().weixin?.accountId;
+      const account = this.pickWeixinAccountSnapshot(runtimeStatus, preferred);
+      return readString(account?.accountId) ?? undefined;
+    } catch (error) {
+      console.debug('[IMGatewayManager] failed to resolve Weixin account from OpenClaw runtime:', error);
+      return undefined;
+    }
   }
 
   async testGateway(
@@ -1503,7 +1630,7 @@ export class IMGatewayManager extends EventEmitter {
    * Start Weixin QR code login via OpenClaw Gateway RPC.
    * Returns the QR code data URL and a session key for polling.
    */
-  async weixinQrLoginStart(): Promise<{ qrDataUrl?: string; message: string; sessionKey?: string }> {
+  async weixinQrLoginStart(): Promise<WeixinQrLoginStartResult> {
     const client = this.getOpenClawGatewayClient?.();
     if (!client) {
       await this.ensureOpenClawGatewayReady?.();
@@ -1516,9 +1643,9 @@ export class IMGatewayManager extends EventEmitter {
     return this.doWeixinQrLoginStart(client);
   }
 
-  private async doWeixinQrLoginStart(client: GatewayClientLike): Promise<{ qrDataUrl?: string; message: string; sessionKey?: string }> {
+  private async doWeixinQrLoginStart(client: GatewayClientLike): Promise<WeixinQrLoginStartResult> {
     try {
-      const result = await client.request<{ qrDataUrl?: string; message: string; sessionKey?: string }>(
+      const result = await client.request<WeixinQrLoginStartResult>(
         'web.login.start',
         { force: true, timeoutMs: 300000, verbose: true },
       );
@@ -1533,17 +1660,28 @@ export class IMGatewayManager extends EventEmitter {
   /**
    * Wait for Weixin QR code scan completion via OpenClaw Gateway RPC.
    */
-  async weixinQrLoginWait(accountId?: string): Promise<{ connected: boolean; message: string; accountId?: string }> {
+  async weixinQrLoginWait(sessionKey?: string): Promise<WeixinQrLoginWaitResult> {
     const client = this.getOpenClawGatewayClient?.();
     if (!client) {
       return { connected: false, message: 'OpenClaw Gateway is not connected.' };
     }
     try {
-      const result = await client.request<{ connected: boolean; message: string; accountId?: string }>(
+      const result = await client.request<WeixinQrLoginWaitResult>(
         'web.login.wait',
-        { timeoutMs: 480000, ...(accountId ? { accountId } : {}) },
+        // OpenClaw's current web.login.wait schema has no sessionKey field, so
+        // the QR flow still has to pass the plugin session key through accountId.
+        { timeoutMs: 480000, ...(sessionKey ? { accountId: sessionKey } : {}) },
       );
-      console.log('[IMGatewayManager] Weixin QR login wait result:', JSON.stringify({ connected: result.connected, message: result.message, accountId: result.accountId }));
+      const alreadyConnected = result.alreadyConnected === true
+        || isWeixinAlreadyConnectedMessage(result.message);
+      const configuredAccountId = this.getConfig().weixin?.accountId?.trim() || undefined;
+      const resolvedAccountId = result.accountId
+        ?? (alreadyConnected ? configuredAccountId ?? await this.resolveWeixinRuntimeAccountId(client) : undefined);
+      console.log('[IMGatewayManager] Weixin QR login wait completed:', JSON.stringify({
+        connected: result.connected,
+        alreadyConnected,
+        accountId: resolvedAccountId,
+      }));
       if (result.connected) {
         // Sync config and restart gateway so the weixin channel starts with
         // the newly saved account credentials. The gateway's web.login.wait
@@ -1552,7 +1690,11 @@ export class IMGatewayManager extends EventEmitter {
         await this.syncOpenClawConfig?.('im-weixin-qr-login-connected');
         await this.ensureOpenClawGatewayConnected?.();
       }
-      return result;
+      return {
+        ...result,
+        alreadyConnected,
+        accountId: resolvedAccountId,
+      };
     } catch (err) {
       console.error('[IMGatewayManager] Weixin QR login wait failed:', err);
       return { connected: false, message: `Login failed: ${String(err)}` };

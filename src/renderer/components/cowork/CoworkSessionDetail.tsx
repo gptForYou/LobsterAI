@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
-import { getArtifactTypeFromExtension, normalizeFilePathForDedup, parseCodeBlockArtifacts, parseFileLinksFromMessage, parseFilePathsFromText, parseRemoteImageArtifactsFromText, parseToolArtifact, parseToolResultMediaArtifacts, stripFileLinksFromText } from '../../services/artifactParser';
+import { normalizeFilePathForDedup, parseFileLinksFromMessage, parseFilePathsFromText, parseMediaTokensFromText, parseRemoteImageArtifactsFromText, parseToolArtifact, parseToolResultMediaArtifacts, stripFileLinksFromText } from '../../services/artifactParser';
 import { coworkService } from '../../services/cowork';
 import { i18nService } from '../../services/i18n';
 import { RootState } from '../../store';
@@ -21,13 +21,17 @@ import {
   selectRemoteManaged,
 } from '../../store/selectors/coworkSelectors';
 import {
+  activateArtifactPreviewTab,
   addArtifact,
+  closeArtifactPreviewTab,
   closePanel,
   MAX_PANEL_WIDTH,
   MIN_PANEL_WIDTH,
+  selectActivePreviewTab,
   selectArtifact,
   selectIsPanelOpen,
   selectPanelWidth,
+  selectPreviewTabs,
   selectSessionArtifacts,
   togglePanel,
 } from '../../store/slices/artifactSlice';
@@ -35,20 +39,24 @@ import { setActiveSkillIds } from '../../store/slices/skillSlice';
 import type { Artifact } from '../../types/artifact';
 import { PREVIEWABLE_ARTIFACT_TYPES } from '../../types/artifact';
 import type { CoworkImageAttachment,CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
+import { CoworkSessionStatusValue } from '../../types/cowork';
 import type { MediaAttachmentRef } from '../../types/mediaGeneration';
 import type { Skill } from '../../types/skill';
 import { formatMessageDateTime } from '../../utils/tokenFormat';
 import { parseUserMessageForDisplay } from '../../utils/userMessageDisplay';
 import { ArtifactPanel, ArtifactPreviewCard } from '../artifacts';
 import ComposeIcon from '../icons/ComposeIcon';
-import CopyIcon from '../icons/CopyIcon';
+import EditIcon from '../icons/EditIcon';
 import ExclamationTriangleIcon from '../icons/ExclamationTriangleIcon';
+import FileTypeIcon from '../icons/fileTypes/FileTypeIcon';
 import InformationCircleIcon from '../icons/InformationCircleIcon';
-import PuzzleIcon from '../icons/PuzzleIcon';
+import MessageCopyIcon from '../icons/MessageCopyIcon';
 import SidebarToggleIcon from '../icons/SidebarToggleIcon';
+import SkillIcon from '../icons/SkillIcon';
 import MarkdownContent from '../MarkdownContent';
 import WindowTitleBar from '../window/WindowTitleBar';
 import { type CoworkOpenShareOptionsEventDetail,CoworkUiEvent } from './constants';
+import ContextUsageIndicator from './ContextUsageIndicator';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import DiffView, { extractDiffFromToolInput } from './DiffView';
 import ImagePreviewModal, { type ImagePreviewSource } from './ImagePreviewModal';
@@ -300,6 +308,12 @@ const ArtifactPanelIcon: React.FC<React.SVGProps<SVGSVGElement> & { open?: boole
   );
 };
 
+const ArtifactTabCloseIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" {...props}>
+    <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
+  </svg>
+);
+
 class ArtifactPanelErrorBoundary extends React.Component<
   { children: React.ReactNode; onClose: () => void },
   { hasError: boolean; error: Error | null }
@@ -415,10 +429,13 @@ const getToolInputString = (
 const truncatePreview = (value: string, maxLength = 120): string =>
   value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
 
+const MEDIA_TOKEN_DISPLAY_RE = /\n?MEDIA:\s*`?[^`\n]+?`?\s*$/gim;
+
 const normalizeToolResultText = (value: string): string => {
   const withoutAnsi = value.replace(ANSI_ESCAPE_PATTERN, '');
   const errorTagMatch = withoutAnsi.trim().match(TOOL_USE_ERROR_TAG_PATTERN);
-  return errorTagMatch ? errorTagMatch[1].trim() : withoutAnsi;
+  const cleaned = errorTagMatch ? errorTagMatch[1].trim() : withoutAnsi;
+  return cleaned.replace(MEDIA_TOKEN_DISPLAY_RE, '').trimEnd();
 };
 
 const isTodoWriteToolName = (toolName: string | undefined): boolean => {
@@ -716,12 +733,26 @@ export type ConversationTurn = {
   assistantItems: AssistantTurnItem[];
 };
 
+const SILENT_TOKEN_RE = /^[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}NO_REPLY[`*_~"'“”‘’()[\]{}<>.,!?;:，。！？；：\s-]{0,8}$/i;
+
+const isSilentAssistantMessage = (message: CoworkMessage): boolean => (
+  message.type === 'assistant' && SILENT_TOKEN_RE.test(message.content.trim())
+);
+
+const isContextCompactionMessage = (message: CoworkMessage): boolean => (
+  message.type === 'system' && message.metadata?.kind === 'context_compaction'
+);
+
 export const buildDisplayItems = (messages: CoworkMessage[]): DisplayItem[] => {
   const items: DisplayItem[] = [];
   const groupsByToolUseId = new Map<string, ToolGroupItem>();
   let pendingAdjacentGroup: ToolGroupItem | null = null;
 
   for (const message of messages) {
+    if (isSilentAssistantMessage(message)) {
+      continue;
+    }
+
     if (message.type === 'tool_use') {
       const group: ToolGroupItem = { type: 'tool_group', toolUse: message };
       items.push(group);
@@ -790,13 +821,18 @@ export const buildConversationTurns = (items: DisplayItem[]): ConversationTurn[]
       continue;
     }
 
-    const turn = ensureTurn();
     if (item.type === 'tool_group') {
+      const turn = ensureTurn();
       turn.assistantItems.push({ type: 'tool_group', group: item });
       continue;
     }
 
     const message = item.message;
+    if (isContextCompactionMessage(message) && currentTurn?.assistantItems.length) {
+      currentTurn = null;
+    }
+    const turn = ensureTurn();
+
     if (message.type === 'assistant') {
       turn.assistantItems.push({ type: 'assistant', message });
       continue;
@@ -827,6 +863,9 @@ export const buildConversationTurns = (items: DisplayItem[]): ConversationTurn[]
 };
 
 const isRenderableAssistantOrSystemMessage = (message: CoworkMessage): boolean => {
+  if (isSilentAssistantMessage(message)) {
+    return false;
+  }
   if (hasText(message.content) || hasText(message.metadata?.error)) {
     return true;
   }
@@ -1208,6 +1247,27 @@ const messageMetaClassName = (visible: boolean, align: 'left' | 'right' = 'left'
   visible ? 'opacity-100' : 'opacity-0 pointer-events-none',
 ].filter(Boolean).join(' ');
 
+const UserMessageSkillBadges: React.FC<{ skills: Skill[] }> = ({ skills }) => {
+  if (skills.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {skills.map(skill => (
+        <div
+          key={skill.id}
+          className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-md bg-primary-muted px-2.5 text-[13px] font-normal leading-none text-foreground"
+          title={skill.description}
+        >
+          <SkillIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
+          <span className="min-w-0 truncate">
+            {skill.name}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 // Copy button component
 const CopyButton: React.FC<{
   content: string;
@@ -1253,7 +1313,7 @@ const CopyButton: React.FC<{
           <polyline points="20 6 9 17 4 12"></polyline>
         </svg>
       ) : (
-        <CopyIcon className="w-4 h-4 text-[var(--icon-secondary)]" />
+        <MessageCopyIcon className="w-4 h-4 text-[var(--icon-secondary)]" />
       )}
     </button>
   );
@@ -1276,22 +1336,7 @@ const ReEditButton: React.FC<{
       tabIndex={visible ? 0 : -1}
       title={i18nService.t('coworkReEdit')}
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="24"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className="w-4 h-4 text-[var(--icon-secondary)]"
-        aria-hidden="true"
-      >
-        <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-        <path d="m15 5 4 4" />
-      </svg>
+      <EditIcon className="w-4 h-4 text-[var(--icon-secondary)]" />
     </button>
   );
 };
@@ -1345,6 +1390,11 @@ export const UserMessageItem: React.FC<{
           <div className="flex items-start gap-3 flex-row-reverse">
             <div className="w-full min-w-0 flex flex-col items-end">
               <div className="w-fit max-w-full rounded-2xl px-4 py-2.5 bg-surface text-foreground shadow-subtle">
+                {messageSkills.length > 0 && (
+                  <div className={(displayContent?.trim() || imageAttachments.length > 0) ? 'mb-2' : ''}>
+                    <UserMessageSkillBadges skills={messageSkills} />
+                  </div>
+                )}
                 {displayContent?.trim() && (
                   <MarkdownContent
                     content={displayContent}
@@ -1377,22 +1427,6 @@ export const UserMessageItem: React.FC<{
                 )}
               </div>
               <div className={messageMetaClassName(isHovered, 'right')} aria-hidden={!isHovered}>
-                {messageSkills.length > 0 && (
-                  <div className="flex items-center gap-1.5 mr-1.5">
-                    {messageSkills.map(skill => (
-                      <div
-                        key={skill.id}
-                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-primary-muted"
-                        title={skill.description}
-                      >
-                        <PuzzleIcon className="h-2.5 w-2.5 text-primary" />
-                        <span className="text-[10px] font-medium text-primary max-w-[60px] truncate">
-                          {skill.name}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
                 <span>{formatMessageDateTime(message.timestamp)}</span>
                 {modelLabel && <span>{modelLabel}</span>}
                 <CopyButton
@@ -1454,7 +1488,8 @@ const AssistantMessageItem: React.FC<{
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ImagePreviewSource | null>(null);
-  const displayContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
+  const rawContent = mapDisplayText ? mapDisplayText(message.content) : message.content;
+  const displayContent = rawContent.replace(MEDIA_TOKEN_DISPLAY_RE, '').trimEnd();
   const modelLabel = getMessageModelLabel(turnMetadata);
   const handleBlur = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
     const nextTarget = event.relatedTarget;
@@ -1502,9 +1537,15 @@ const AssistantMessageItem: React.FC<{
 };
 
 // Streaming activity bar shown between messages and input
-const StreamingActivityBar: React.FC<{ messages: CoworkMessage[] }> = ({ messages }) => {
+const StreamingActivityBar: React.FC<{ messages: CoworkMessage[]; isContextMaintenance?: boolean }> = ({
+  messages,
+  isContextMaintenance = false,
+}) => {
   // Walk messages backwards to find the latest tool_use without a paired tool_result
   const getStatusText = (): string => {
+    if (isContextMaintenance) {
+      return i18nService.t('coworkContextMaintenanceRunning');
+    }
     const toolUseIds = new Set<string>();
     const toolResultIds = new Set<string>();
     for (const msg of messages) {
@@ -1798,6 +1839,8 @@ export const AssistantTurnBlock: React.FC<{
   );
 };
 
+const EMPTY_ARTIFACTS: Artifact[] = [];
+
 const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   onManageSkills,
   onContinue,
@@ -1815,11 +1858,22 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const lastMessageContent = useSelector(selectLastMessageContent);
   const messagesLength = useSelector(selectCurrentMessagesLength);
   const skills = useSelector((state: RootState) => state.skill.skills);
+  const contextUsage = useSelector((state: RootState) =>
+    currentSession?.id ? state.cowork.contextUsageBySessionId[currentSession.id] : undefined
+  );
+  const isContextCompacting = useSelector((state: RootState) =>
+    currentSession?.id ? state.cowork.compactingSessionIds.includes(currentSession.id) : false
+  );
+  const isContextMaintenance = useSelector((state: RootState) =>
+    currentSession?.id ? state.cowork.contextMaintenanceSessionIds.includes(currentSession.id) : false
+  );
   const detailRootRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const promptInputRef = useRef<CoworkPromptInputRef>(null);
+  const compactConfirmRef = useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
+  const [showCompactConfirm, setShowCompactConfirm] = useState(false);
   const isLoadingMoreMessagesRef = useRef(false);
   const prevScrollHeightRef = useRef<number | null>(null);
 
@@ -1828,6 +1882,39 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   useEffect(() => {
     clearHeightCache();
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    coworkService.refreshContextUsageForSessionEntry(sessionId);
+  }, [sessionId]);
+
+  useEffect(() => {
+    setShowCompactConfirm(false);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!showCompactConfirm) return undefined;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && compactConfirmRef.current?.contains(target)) {
+        return;
+      }
+      setShowCompactConfirm(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowCompactConfirm(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showCompactConfirm]);
 
   // Rail navigation states
   const [currentRailIndex, setCurrentRailIndex] = useState(-1);
@@ -1852,6 +1939,42 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     setShouldAutoScroll(true);
   }, [currentSession?.id]);
 
+  const handleCompactContext = useCallback(() => {
+    if (!currentSession?.id) {
+      console.warn('[CoworkSessionDetail] manual context compaction was ignored because no session is selected.');
+      return;
+    }
+    if (isContextCompacting) {
+      console.debug('[CoworkSessionDetail] manual context compaction was ignored because compaction is already running.');
+      return;
+    }
+    if (isStreaming || isContextMaintenance || currentSession.status === CoworkSessionStatusValue.Running) {
+      console.debug('[CoworkSessionDetail] manual context compaction was ignored because the session is still running.');
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t('coworkContextCompactBlockedRunning'),
+      }));
+      return;
+    }
+    console.debug('[CoworkSessionDetail] manual context compaction confirmation toggled.');
+    setShowCompactConfirm(prev => !prev);
+  }, [currentSession?.id, currentSession?.status, isContextCompacting, isContextMaintenance, isStreaming]);
+
+  const handleCancelCompactContext = useCallback(() => {
+    console.debug('[CoworkSessionDetail] manual context compaction was canceled by the user.');
+    setShowCompactConfirm(false);
+  }, []);
+
+  const handleConfirmCompactContext = useCallback(() => {
+    if (!currentSession?.id) {
+      setShowCompactConfirm(false);
+      console.warn('[CoworkSessionDetail] manual context compaction confirmation was ignored because no session is selected.');
+      return;
+    }
+    console.log(`[CoworkSessionDetail] manual context compaction confirmed for session ${currentSession.id}.`);
+    setShowCompactConfirm(false);
+    void coworkService.compactContext(currentSession.id);
+  }, [currentSession?.id]);
+
   // ─── Artifact detection ─────────────────────────────────────────────
   const isPanelOpen = useSelector(selectIsPanelOpen);
   const panelWidth = useSelector(selectPanelWidth);
@@ -1863,8 +1986,20 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const previousArtifactPanelOpenRef = useRef(isPanelOpen);
   const contentRowRef = useRef<HTMLDivElement>(null);
   const sessionArtifacts = useSelector((state: RootState) =>
-    sessionId ? selectSessionArtifacts(state, sessionId) : []
+    sessionId ? selectSessionArtifacts(state, sessionId) : EMPTY_ARTIFACTS
   );
+  const artifactPreviewTabs = useSelector((state: RootState) =>
+    sessionId ? selectPreviewTabs(state, sessionId) : []
+  );
+  const activeArtifactPreviewTab = useSelector((state: RootState) =>
+    sessionId ? selectActivePreviewTab(state, sessionId) : null
+  );
+  const artifactTabsWithArtifacts = useMemo(() => {
+    const artifactsById = new Map(sessionArtifacts.map(artifact => [artifact.id, artifact]));
+    return artifactPreviewTabs
+      .map(tab => ({ tab, artifact: artifactsById.get(tab.artifactId) }))
+      .filter((item): item is { tab: typeof artifactPreviewTabs[number]; artifact: Artifact } => Boolean(item.artifact));
+  }, [artifactPreviewTabs, sessionArtifacts]);
 
   const loadedFileIdsRef = useRef<Set<string>>(new Set());
 
@@ -1946,6 +2081,16 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     loadedFileIdsRef.current = new Set();
   }, [sessionId, dispatch]);
 
+  const handleActivateArtifactTab = useCallback((tabId: string) => {
+    if (!sessionId) return;
+    dispatch(activateArtifactPreviewTab({ sessionId, tabId }));
+  }, [dispatch, sessionId]);
+
+  const handleCloseArtifactTab = useCallback((tabId: string) => {
+    if (!sessionId) return;
+    dispatch(closeArtifactPreviewTab({ sessionId, tabId }));
+  }, [dispatch, sessionId]);
+
   useEffect(() => {
     if (!sessionId || !currentSession?.messages?.length) return;
     if (isStreaming) return;
@@ -1957,9 +2102,6 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
       for (const msg of messages) {
         if (msg.type === 'assistant' && !msg.metadata?.isThinking && msg.content) {
-          const codeBlockArtifacts = parseCodeBlockArtifacts(msg.content, msg.id, sessionId);
-          detected.push(...codeBlockArtifacts);
-
           const fileLinks = parseFileLinksFromMessage(msg.content, msg.id, sessionId);
           for (const fl of fileLinks) {
             const normalized = fl.filePath ? normalizeFilePathForDedup(fl.filePath) : '';
@@ -1983,6 +2125,14 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         }
 
         if (msg.type === 'tool_result' && msg.content) {
+          const mediaArtifacts = parseMediaTokensFromText(msg.content, msg.id, sessionId);
+          for (const ma of mediaArtifacts) {
+            const normalized = ma.filePath ? normalizeFilePathForDedup(ma.filePath) : '';
+            if (ma.filePath && !seenFilePaths.has(normalized)) {
+              seenFilePaths.add(normalized);
+              detected.push(ma);
+            }
+          }
           const pathArtifacts = parseFilePathsFromText(msg.content, msg.id, sessionId, 'artifact-toolresult');
           for (const pa of pathArtifacts) {
             const normalized = pa.filePath ? normalizeFilePathForDedup(pa.filePath) : '';
@@ -2034,15 +2184,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
               seenFilePaths.add(normalized);
               detected.push(toolArtifact);
             }
-          } else if (toolArtifact && !toolArtifact.filePath) {
-            detected.push(toolArtifact);
           }
-        }
-      }
-
-      for (const a of detected) {
-        if (!a.filePath) {
-          dispatch(addArtifact({ sessionId, artifact: a }));
         }
       }
 
@@ -2103,66 +2245,86 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps -- uses messagesLength as stable proxy for currentSession.messages
   }, [sessionId, messagesLength, isStreaming, dispatch]);
 
-  // Intercept clicks on artifact-compatible file links → open in panel
+  // Mid-turn artifact detection: detect MEDIA/file artifacts from backfilled tool results
+  // while still streaming. The main effect above skips when isStreaming=true, but incremental
+  // backfill can populate tool_result text mid-turn. This effect handles that case.
   useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container || !sessionId) return;
+    if (!sessionId || !isStreaming || !currentSession?.messages?.length) return;
 
-    const handleLinkClick = (e: MouseEvent) => {
-      const anchor = (e.target as HTMLElement).closest('a');
-      if (!anchor) return;
+    try {
+      const messages = currentSession.messages;
+      const cwd = currentSession.cwd;
+      const toLoad: Artifact[] = [];
+      const seenFilePaths = new Set<string>();
 
-      const href = anchor.getAttribute('href') || '';
-      if (!href.startsWith('file://')) return;
+      for (const msg of messages) {
+        if (msg.type !== 'tool_result' || !msg.content || !msg.metadata?.isFinal) continue;
+        if (loadedFileIdsRef.current.has(msg.id)) continue;
 
-      let filePath: string;
-      try {
-        filePath = decodeURIComponent(href.replace(/^file:\/\//, ''));
-      } catch {
-        filePath = href.replace(/^file:\/\//, '');
+        // Only detect explicit MEDIA: tokens in tool results — do NOT parse bare file paths
+        // here, because tool output (e.g. `ls`) may contain many irrelevant file paths.
+        const mediaArtifacts = parseMediaTokensFromText(msg.content, msg.id, sessionId);
+        for (const ma of mediaArtifacts) {
+          const normalized = ma.filePath ? normalizeFilePathForDedup(ma.filePath) : '';
+          if (ma.filePath && !seenFilePaths.has(normalized) && !loadedFileIdsRef.current.has(ma.id)) {
+            seenFilePaths.add(normalized);
+            toLoad.push(ma);
+          }
+        }
       }
-      // Strip leading / before Windows drive letter
-      if (/^\/[A-Za-z]:/.test(filePath)) {
-        filePath = filePath.slice(1);
-      }
 
-      const lastDot = filePath.lastIndexOf('.');
-      if (lastDot === -1) return;
-      const ext = filePath.slice(lastDot).toLowerCase();
-      if (!getArtifactTypeFromExtension(ext)) return;
+      if (toLoad.length === 0) return;
 
-      e.preventDefault();
-      e.stopPropagation();
-
-      const normalizedClick = normalizeFilePathForDedup(filePath);
-      const existing = sessionArtifacts.find(a => a.filePath && normalizeFilePathForDedup(a.filePath) === normalizedClick);
-      if (existing) {
-        dispatch(selectArtifact(existing.id));
-      } else {
-        const type = getArtifactTypeFromExtension(ext)!;
-        const fileName = filePath.slice(Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')) + 1);
-        const newArtifact: Artifact = {
-          id: `artifact-click-${Date.now()}`,
-          messageId: '',
-          sessionId,
-          type,
-          title: fileName,
-          content: '',
-          fileName,
-          filePath,
-          source: 'tool',
-          createdAt: Date.now(),
-        };
-        dispatch(addArtifact({ sessionId, artifact: newArtifact }));
-        dispatch(selectArtifact(newArtifact.id));
-      }
-    };
-
-    container.addEventListener('click', handleLinkClick, true);
-    return () => container.removeEventListener('click', handleLinkClick, true);
-  }, [sessionId, sessionArtifacts, dispatch]);
-  // ─── End artifact detection ─────────────────────────────────────────
-
+      const loadFiles = async () => {
+        for (const artifact of toLoad) {
+          if (loadedFileIdsRef.current.has(artifact.id)) continue;
+          let rawPath = artifact.filePath!;
+          if (rawPath.startsWith('file:///')) {
+            rawPath = rawPath.slice(7);
+          } else if (rawPath.startsWith('file://')) {
+            rawPath = rawPath.slice(7);
+          } else if (rawPath.startsWith('file:/')) {
+            rawPath = rawPath.slice(5);
+          }
+          if (/^\/[A-Za-z]:/.test(rawPath)) {
+            rawPath = rawPath.slice(1);
+          }
+          const absPath = rawPath.startsWith('/')
+            ? rawPath
+            : (/^[A-Za-z]:/.test(rawPath) ? rawPath : `${cwd}/${rawPath}`);
+          try {
+            const result = await window.electron.dialog.readFileAsDataUrl(absPath);
+            if (result?.success && result.dataUrl) {
+              const isTextType = artifact.type !== 'image' && artifact.type !== 'document';
+              let content = result.dataUrl;
+              if (isTextType) {
+                try {
+                  const base64 = result.dataUrl.split(',')[1] || '';
+                  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+                  content = new TextDecoder('utf-8').decode(bytes);
+                } catch {
+                  content = result.dataUrl;
+                }
+              }
+              loadedFileIdsRef.current.add(artifact.id);
+              dispatch(addArtifact({
+                sessionId,
+                artifact: { ...artifact, content, filePath: absPath },
+              }));
+            } else {
+              loadedFileIdsRef.current.add(artifact.id);
+            }
+          } catch {
+            loadedFileIdsRef.current.add(artifact.id);
+          }
+        }
+      };
+      loadFiles();
+    } catch (err) {
+      console.error('[ArtifactDetection:midTurn] failed:', err);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mid-turn artifact detection for backfilled tool results
+  }, [sessionId, messagesLength, isStreaming, dispatch]);
   // Cleanup nav timers on unmount
   useEffect(() => {
     return () => {
@@ -2725,6 +2887,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const artifactPanelFrameWidth = isArtifactPanelVisible
     ? Math.max(artifactPanelMinWidth, Math.min(panelWidth, artifactPanelMaxWidth)) + ARTIFACT_PANEL_RESIZE_HANDLE_WIDTH
     : 0;
+  const artifactHeaderWidth = isArtifactPanelVisible
+    ? Math.max(0, artifactPanelFrameWidth - ARTIFACT_PANEL_RESIZE_HANDLE_WIDTH)
+    : undefined;
   const shouldShowTurnNavigationRail = turns.length > 1 && isScrollable;
 
   const renderConversationTurns = () => {
@@ -2808,7 +2973,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       {/* Header — spans full width */}
       <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border bg-background shrink-0">
         {/* Left side: Toggle buttons (when collapsed) + Title */}
-        <div className="flex h-full items-center gap-2 min-w-0">
+        <div className="flex h-full flex-1 items-center gap-2 min-w-0">
           {isSidebarCollapsed && (
             <div className={`non-draggable flex items-center gap-1 ${isMac ? 'pl-[68px]' : ''}`}>
               <button
@@ -2834,7 +2999,69 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         </div>
 
         {/* Right side: Artifact toggle */}
-        <div className="non-draggable flex items-center gap-1">
+        <div
+          className={`non-draggable flex h-full shrink-0 items-center gap-1 ${
+            isArtifactPanelVisible ? '-mr-4 border-l border-border pr-4' : ''
+          }`}
+          style={artifactHeaderWidth !== undefined ? { width: artifactHeaderWidth } : undefined}
+        >
+          {isArtifactPanelVisible && artifactTabsWithArtifacts.length > 0 && (
+            <div className="relative flex h-full min-w-0 flex-1">
+              <div className="scrollbar-hidden flex h-full min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
+                <div className="flex h-full min-w-max items-center gap-1 pl-4 pr-3">
+                  {artifactTabsWithArtifacts.map(({ tab, artifact }) => {
+                    const isActive = tab.id === activeArtifactPreviewTab?.id;
+                    const fileName = artifact.fileName || artifact.title;
+                    return (
+                      <div
+                        key={tab.id}
+                        className={`group flex h-7 w-[clamp(92px,24vw,190px)] items-center rounded-lg text-xs transition-colors ${
+                          isActive
+                            ? 'bg-surface-raised text-foreground shadow-sm'
+                            : 'text-secondary hover:bg-surface hover:text-foreground'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleActivateArtifactTab(tab.id)}
+                          className="flex min-w-0 flex-1 items-center gap-1.5 px-2 text-left"
+                          title={fileName}
+                        >
+                          <FileTypeIcon fileName={fileName} className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate">{fileName}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleCloseArtifactTab(tab.id);
+                          }}
+                          className={`mr-1 rounded p-0.5 transition-colors ${
+                            isActive
+                              ? 'text-secondary hover:bg-surface-hover hover:text-foreground'
+                              : 'text-transparent group-hover:text-secondary group-hover:hover:bg-surface-hover group-hover:hover:text-foreground'
+                          }`}
+                          title={i18nService.t('artifactCloseTab')}
+                        >
+                          <ArtifactTabCloseIcon className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-gradient-to-r from-background from-[34%] via-background/80 via-[66%] to-transparent backdrop-blur-sm [mask-image:linear-gradient(to_right,black_0%,black_40%,rgba(0,0,0,0.75)_72%,transparent_100%)] [-webkit-mask-image:linear-gradient(to_right,black_0%,black_40%,rgba(0,0,0,0.75)_72%,transparent_100%)]" />
+              <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-gradient-to-l from-background from-[18%] via-background/80 via-[58%] to-transparent backdrop-blur-sm [mask-image:linear-gradient(to_left,black_0%,black_30%,rgba(0,0,0,0.75)_68%,transparent_100%)] [-webkit-mask-image:linear-gradient(to_left,black_0%,black_30%,rgba(0,0,0,0.75)_68%,transparent_100%)]" />
+            </div>
+          )}
+          {isArtifactPanelVisible && artifactTabsWithArtifacts.length === 0 && (
+            <div className="flex h-full min-w-0 flex-1 items-center px-1">
+              <div className="flex h-7 max-w-[190px] flex-1 items-center gap-1.5 rounded-lg bg-surface-raised px-2 text-xs text-foreground shadow-sm">
+                <ArtifactPanelIcon className="h-3.5 w-3.5 shrink-0" open />
+                <span className="truncate">{i18nService.t('artifactFileList')}</span>
+              </div>
+            </div>
+          )}
           {/* Artifact panel toggle */}
           <button
             type="button"
@@ -3132,7 +3359,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       </div>
 
       {/* Streaming Activity Bar */}
-      {isStreaming && <StreamingActivityBar messages={currentSession.messages} />}
+      {isStreaming && <StreamingActivityBar messages={currentSession.messages} isContextMaintenance={isContextMaintenance} />}
 
       {/* Input Area */}
       <div className={`pt-0 pb-4 shrink-0 ${COWORK_DETAIL_GUTTER_CLASS}`}>
@@ -3153,6 +3380,37 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             workingDirectory={currentSession?.cwd ?? ''}
             contextAgentId={currentSession?.agentId}
             sessionId={currentSession?.id}
+            contextUsageControl={(
+              <div ref={compactConfirmRef} className="relative inline-flex flex-shrink-0">
+                <ContextUsageIndicator
+                  usage={contextUsage}
+                  compacting={isContextCompacting}
+                  disabled={remoteManaged || !currentSession?.id}
+                  onCompact={handleCompactContext}
+                  showTooltip={!showCompactConfirm}
+                  active={showCompactConfirm}
+                  className="-mr-1"
+                />
+                {showCompactConfirm && (
+                  <div className="absolute bottom-full left-1/2 z-50 mb-1.5 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-border bg-surface p-1.5 shadow-popover">
+                    <button
+                      type="button"
+                      onClick={handleCancelCompactContext}
+                      className="whitespace-nowrap rounded-md bg-surface-raised px-2.5 py-1 text-center text-[11px] font-medium leading-4 text-secondary transition-colors hover:text-foreground"
+                    >
+                      {i18nService.t('cancel')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmCompactContext}
+                      className="whitespace-nowrap rounded-md bg-primary px-2.5 py-1 text-center text-[11px] font-semibold leading-4 text-white transition-colors hover:bg-primary-hover"
+                    >
+                      {i18nService.t('coworkContextCompactConfirmActionShort')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           />
         </div>
       </div>
@@ -3176,6 +3434,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         >
           <ArtifactPanelErrorBoundary onClose={() => dispatch(closePanel())}>
             <ArtifactPanel
+              sessionId={currentSession.id}
               artifacts={sessionArtifacts}
               minPanelWidth={artifactPanelMinWidth}
               maxPanelWidth={artifactPanelMaxWidth}

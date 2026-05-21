@@ -2,6 +2,7 @@ import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 import {
   type CoworkConfig,
+  type CoworkContextUsage,
   type CoworkMessage,
   type CoworkPermissionRequest,
   type CoworkSession,
@@ -31,6 +32,10 @@ interface CoworkState {
   unreadSessionIds: string[];
   isCoworkActive: boolean;
   isStreaming: boolean;
+  contextUsageBySessionId: Record<string, CoworkContextUsage>;
+  compactingSessionIds: string[];
+  contextMaintenanceSessionIds: string[];
+  notifiedCompactionBySessionId: Record<string, number>;
   remoteManaged: boolean;
   pendingPermissions: CoworkPermissionRequest[];
   config: CoworkConfig;
@@ -50,6 +55,10 @@ const initialState: CoworkState = {
   unreadSessionIds: [],
   isCoworkActive: false,
   isStreaming: false,
+  contextUsageBySessionId: {},
+  compactingSessionIds: [],
+  contextMaintenanceSessionIds: [],
+  notifiedCompactionBySessionId: {},
   remoteManaged: false,
   pendingPermissions: [],
   config: {
@@ -281,6 +290,34 @@ const coworkSlice = createSlice({
       state.isStreaming = action.payload;
     },
 
+    setContextUsage(state, action: PayloadAction<CoworkContextUsage>) {
+      state.contextUsageBySessionId[action.payload.sessionId] = action.payload;
+    },
+
+    setContextCompacting(state, action: PayloadAction<{ sessionId: string; compacting: boolean }>) {
+      const { sessionId, compacting } = action.payload;
+      const existing = state.compactingSessionIds.includes(sessionId);
+      if (compacting && !existing) {
+        state.compactingSessionIds.push(sessionId);
+      } else if (!compacting && existing) {
+        state.compactingSessionIds = state.compactingSessionIds.filter(id => id !== sessionId);
+      }
+    },
+
+    setContextMaintenance(state, action: PayloadAction<{ sessionId: string; active: boolean }>) {
+      const { sessionId, active } = action.payload;
+      const existing = state.contextMaintenanceSessionIds.includes(sessionId);
+      if (active && !existing) {
+        state.contextMaintenanceSessionIds.push(sessionId);
+      } else if (!active && existing) {
+        state.contextMaintenanceSessionIds = state.contextMaintenanceSessionIds.filter(id => id !== sessionId);
+      }
+    },
+
+    markCompactionNotified(state, action: PayloadAction<{ sessionId: string; compactionCount: number }>) {
+      state.notifiedCompactionBySessionId[action.payload.sessionId] = action.payload.compactionCount;
+    },
+
     setRemoteManaged(state, action: PayloadAction<boolean>) {
       state.remoteManaged = action.payload;
     },
@@ -303,11 +340,9 @@ const coworkSlice = createSlice({
       const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
       if (sessionIndex !== -1) {
         state.sessions[sessionIndex].title = title;
-        state.sessions[sessionIndex].updatedAt = Date.now();
       }
       if (state.currentSession?.id === sessionId) {
         state.currentSession.title = title;
-        state.currentSession.updatedAt = Date.now();
       }
     },
 
@@ -409,6 +444,10 @@ export const {
   prependMessages,
   updateMessageContent,
   setStreaming,
+  setContextUsage,
+  setContextCompacting,
+  setContextMaintenance,
+  markCompactionNotified,
   setRemoteManaged,
   updateSessionPinned,
   updateSessionTitle,

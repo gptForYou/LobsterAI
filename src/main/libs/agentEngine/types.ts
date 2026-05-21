@@ -1,5 +1,5 @@
 import type { OpenClawSessionPatch } from '../../../common/openclawSession';
-import type { CoworkMessage } from '../../coworkStore';
+import type { CoworkMessage, CoworkSessionStatus } from '../../coworkStore';
 
 export type CoworkAgentEngine = 'openclaw';
 
@@ -29,11 +29,29 @@ export interface PermissionRequest {
 export interface CoworkRuntimeEvents {
   message: (sessionId: string, message: CoworkMessage) => void;
   messageUpdate: (sessionId: string, messageId: string, content: string, metadata?: Record<string, unknown>) => void;
+  sessionStatus: (sessionId: string, status: CoworkSessionStatus) => void;
+  contextUsageUpdate: (sessionId: string, usage: CoworkContextUsage) => void;
+  contextMaintenance: (sessionId: string, active: boolean) => void;
   permissionRequest: (sessionId: string, request: PermissionRequest) => void;
   complete: (sessionId: string, claudeSessionId: string | null) => void;
   error: (sessionId: string, error: string) => void;
   sessionStopped: (sessionId: string) => void;
 }
+
+export type CoworkContextUsage = {
+  sessionId: string;
+  sessionKey?: string;
+  usedTokens?: number;
+  contextTokens?: number;
+  percent?: number;
+  compactionCount?: number;
+  status: 'unknown' | 'normal' | 'warning' | 'danger' | 'compacting';
+  latestCompactionCheckpointId?: string;
+  latestCompactionReason?: string;
+  latestCompactionCreatedAt?: number;
+  model?: string;
+  updatedAt: number;
+};
 
 export type CoworkImageAttachment = {
   name: string;
@@ -78,6 +96,8 @@ export interface CoworkRuntime {
   startSession(sessionId: string, prompt: string, options?: CoworkStartOptions): Promise<void>;
   continueSession(sessionId: string, prompt: string, options?: CoworkContinueOptions): Promise<void>;
   patchSession?(sessionId: string, patch: OpenClawSessionPatch): Promise<void>;
+  getContextUsage?(sessionId: string): Promise<CoworkContextUsage | null>;
+  compactContext?(sessionId: string): Promise<{ compacted: boolean; reason?: string; usage?: CoworkContextUsage | null }>;
   stopSession(sessionId: string): void;
   stopAllSessions(): void;
   respondToPermission(requestId: string, result: PermissionResult): void;

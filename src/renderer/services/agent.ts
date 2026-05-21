@@ -11,8 +11,20 @@ import {
 } from '../store/slices/agentSlice';
 import { clearCurrentSession } from '../store/slices/coworkSlice';
 import { clearAgentSelectedModel } from '../store/slices/modelSlice';
-import { clearActiveSkills,setActiveSkillIds } from '../store/slices/skillSlice';
+import { clearActiveSkills, setActiveSkillIds } from '../store/slices/skillSlice';
 import type { Agent, PresetAgent } from '../types/agent';
+
+const syncActiveSkillsForCurrentAgent = (agentId: string, skillIds: string[]): void => {
+  if (store.getState().agent.currentAgentId !== agentId) {
+    return;
+  }
+
+  if (skillIds.length > 0) {
+    store.dispatch(setActiveSkillIds(skillIds));
+  } else {
+    store.dispatch(clearActiveSkills());
+  }
+};
 
 class AgentService {
   async loadAgents(): Promise<void> {
@@ -94,6 +106,7 @@ class AgentService {
     try {
       const agent = await window.electron?.agents?.update(id, updates);
       if (agent) {
+        const skillIds = agent.skillIds ?? [];
         store.dispatch(updateAgentAction({
           id: agent.id,
           updates: {
@@ -105,9 +118,10 @@ class AgentService {
             enabled: agent.enabled,
             pinned: agent.pinned ?? false,
             pinOrder: agent.pinOrder ?? null,
-            skillIds: agent.skillIds ?? [],
+            skillIds,
           },
         }));
+        syncActiveSkillsForCurrentAgent(agent.id, skillIds);
         return agent;
       }
       return null;

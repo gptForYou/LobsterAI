@@ -1,6 +1,8 @@
+import { ApiFormat, ProviderName } from '@shared/providers';
 import { expect, test } from 'vitest';
 
 import {
+  defaultConfig,
   getCustomProviderDefaultName,
   getProviderDisplayName,
   isCustomProvider,
@@ -70,3 +72,8 @@ test('getProviderDisplayName: custom provider with undefined displayName uses de
   expect(getProviderDisplayName('custom_2', { displayName: undefined })).toBe('Custom2');
 });
 
+test('defaultConfig uses OpenAI-compatible DeepSeek defaults', () => {
+  expect(defaultConfig.api.baseUrl).toBe('https://api.deepseek.com');
+  expect(defaultConfig.providers?.[ProviderName.DeepSeek]?.apiFormat).toBe(ApiFormat.OpenAI);
+  expect(defaultConfig.providers?.[ProviderName.Xiaomi]?.apiFormat).toBe(ApiFormat.OpenAI);
+});

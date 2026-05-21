@@ -127,9 +127,6 @@ const FileDirectoryView: React.FC<FileDirectoryViewProps> = ({ artifacts, select
                         {getShortPath(artifact.filePath)}
                       </div>
                     )}
-                    {!compact && !artifact.filePath && artifact.source === 'codeblock' && (
-                      <div className="text-[10px] text-muted">code block</div>
-                    )}
                   </div>
                   {!compact && (
                     <span className="shrink-0 text-xs text-muted uppercase">

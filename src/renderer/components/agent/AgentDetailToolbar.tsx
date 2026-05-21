@@ -29,7 +29,6 @@ const AgentDetailToolbar: React.FC<AgentDetailToolbarProps> = ({
         dropdownDirection="up"
         value={model}
         onChange={onModelChange}
-        defaultLabel={i18nService.t('agentUseDefaultModel')}
         portal
       />
     </div>

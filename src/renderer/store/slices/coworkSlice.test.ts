@@ -9,6 +9,7 @@ import coworkReducer, {
   setSessions,
   updateCurrentSessionModelOverride,
   updateSessionStatus,
+  updateSessionTitle,
 } from './coworkSlice';
 
 const makeSession = (overrides: Partial<Parameters<typeof addSession>[0]> = {}) => ({
@@ -94,6 +95,22 @@ test('updateCurrentSessionModelOverride only patches the active session', () => 
   );
 
   expect(ignoredState.currentSession?.modelOverride).toBe('lobsterai-server/qwen3.6-plus-YoudaoInner');
+});
+
+test('updateSessionTitle preserves the session updated time', () => {
+  const session = makeSession({ updatedAt: 1000 });
+  const state = coworkReducer(
+    coworkReducer(undefined, addSession(session)),
+    updateSessionTitle({
+      sessionId: 'session-1',
+      title: 'Renamed task',
+    }),
+  );
+
+  expect(state.sessions[0].title).toBe('Renamed task');
+  expect(state.sessions[0].updatedAt).toBe(1000);
+  expect(state.currentSession?.title).toBe('Renamed task');
+  expect(state.currentSession?.updatedAt).toBe(1000);
 });
 
 test('addSession preserves the agent id in session summaries', () => {

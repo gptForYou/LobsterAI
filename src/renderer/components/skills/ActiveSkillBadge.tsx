@@ -1,10 +1,11 @@
 import React from 'react';
-import { useSelector, useDispatch } from 'react-redux';
-import XMarkIcon from '../icons/XMarkIcon';
-import PuzzleIcon from '../icons/PuzzleIcon';
-import { RootState } from '../../store';
-import { toggleActiveSkill, clearActiveSkills } from '../../store/slices/skillSlice';
+import { useDispatch, useSelector } from 'react-redux';
+
 import { i18nService } from '../../services/i18n';
+import { RootState } from '../../store';
+import { toggleActiveSkill } from '../../store/slices/skillSlice';
+import SkillIcon from '../icons/SkillIcon';
+import XMarkIcon from '../icons/XMarkIcon';
 
 const ActiveSkillBadge: React.FC = () => {
   const dispatch = useDispatch();
@@ -22,42 +23,25 @@ const ActiveSkillBadge: React.FC = () => {
     dispatch(toggleActiveSkill(skillId));
   };
 
-  const handleClearAll = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    dispatch(clearActiveSkills());
-  };
-
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
       {activeSkills.map(skill => (
-        <div
-          key={skill.id}
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-primary-muted border border-primary"
-        >
-          <PuzzleIcon className="h-3.5 w-3.5 text-primary" />
-          <span className="text-xs font-medium text-primary max-w-[80px] truncate">
-            {skill.name}
-          </span>
-          <button
-            type="button"
-            onClick={(e) => handleRemoveSkill(e, skill.id)}
-            className="p-0.5 rounded hover:bg-primary-muted transition-colors"
-            title={i18nService.t('clearSkill')}
-          >
-            <XMarkIcon className="h-2.5 w-2.5 text-primary" />
-          </button>
-        </div>
-      ))}
-      {activeSkills.length > 1 && (
         <button
           type="button"
-          onClick={handleClearAll}
-          className="text-xs text-primary hover:text-primary-hover transition-colors"
-          title={i18nService.t('clearAllSkills')}
+          key={skill.id}
+          onClick={(e) => handleRemoveSkill(e, skill.id)}
+          className="group inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-md bg-primary-muted px-2.5 text-[13px] font-normal leading-none text-foreground transition-all hover:bg-primary/15 hover:ring-1 hover:ring-primary/30"
+          title={i18nService.t('clearSkill')}
         >
-          {i18nService.t('clearAll')}
+          <span className="relative flex h-4 w-4 shrink-0 items-center justify-center rounded-sm transition-colors group-hover:bg-primary/15">
+            <SkillIcon className="h-3.5 w-3.5 text-primary transition-opacity group-hover:opacity-0" />
+            <XMarkIcon className="absolute h-3 w-3 text-primary opacity-0 transition-opacity group-hover:opacity-100" />
+          </span>
+          <span className="min-w-0 truncate">
+            {skill.name}
+          </span>
         </button>
-      )}
+      ))}
     </div>
   );
 };

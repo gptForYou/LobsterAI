@@ -1,8 +1,9 @@
-import { test, expect, describe } from 'vitest';
+import { describe,expect, test } from 'vitest';
+
 import {
-  ProviderName,
-  OpenClawProviderId,
   OpenClawApi,
+  OpenClawProviderId,
+  ProviderName,
 } from '../../shared/providers';
 
 const providerApiKeyEnvVar = (providerName: string): string => {
@@ -108,12 +109,27 @@ type ProviderDescriptor = {
   resolveApi: (ctx: { apiType: 'anthropic' | 'openai' | undefined; baseURL: string }) => OpenClawProviderApi;
   normalizeBaseUrl: (rawBaseUrl: string) => string;
   resolveSessionModelId?: (modelId: string) => string;
+  resolveModelReasoning?: (modelId: string, codingPlanEnabled: boolean) => boolean | undefined;
   modelDefaults?: Partial<{
     reasoning: boolean;
     cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
     contextWindow: number;
     maxTokens: number;
   }>;
+};
+
+const DEEPSEEK_REASONING_MODEL_IDS = new Set(['deepseek-reasoner', 'deepseek-r1']);
+const DEEPSEEK_V4_MODEL_PATTERN = /^deepseek-v4(?:[-_.]|$)/;
+
+const resolveDeepSeekModelReasoning = (modelId: string): boolean | undefined => {
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (DEEPSEEK_REASONING_MODEL_IDS.has(normalized) || DEEPSEEK_V4_MODEL_PATTERN.test(normalized)) {
+    return true;
+  }
+  return undefined;
 };
 
 const stripChatCompletionsSuffix = (rawBaseUrl: string): string => {
@@ -157,6 +173,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
     providerId: OpenClawProviderId.DeepSeek,
     resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
     normalizeBaseUrl: stripChatCompletionsSuffix,
+    resolveModelReasoning: resolveDeepSeekModelReasoning,
   },
   [ProviderName.Qwen]: {
     providerId: OpenClawProviderId.Qwen,
@@ -192,6 +209,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
     providerId: OpenClawProviderId.Xiaomi,
     resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
     normalizeBaseUrl: stripChatCompletionsSuffix,
+    resolveModelReasoning: () => true,
   },
   [ProviderName.OpenRouter]: {
     providerId: OpenClawProviderId.OpenRouter,
@@ -271,6 +289,20 @@ describe('resolveDescriptor', () => {
     expect(d.providerId).toBe(OpenClawProviderId.DeepSeek);
     expect(d.resolveApi({ apiType: 'openai', baseURL: '' })).toBe(OpenClawApi.OpenAICompletions);
     expect(d.resolveApi({ apiType: 'anthropic', baseURL: '' })).toBe(OpenClawApi.AnthropicMessages);
+  });
+
+  test('deepseek marks reasoning models but leaves chat models unspecified', () => {
+    const d = resolveDescriptor(ProviderName.DeepSeek, false);
+    expect(d.resolveModelReasoning?.('deepseek-reasoner', false)).toBe(true);
+    expect(d.resolveModelReasoning?.('deepseek-v4-pro', false)).toBe(true);
+    expect(d.resolveModelReasoning?.('deepseek-v4_flash', false)).toBe(true);
+    expect(d.resolveModelReasoning?.('deepseek-chat', false)).toBeUndefined();
+  });
+
+  test('xiaomi marks every model as reasoning-capable', () => {
+    const d = resolveDescriptor(ProviderName.Xiaomi, false);
+    expect(d.resolveModelReasoning?.('mimo-v2.5-pro', false)).toBe(true);
+    expect(d.resolveModelReasoning?.('mimo-custom-model', false)).toBe(true);
   });
 
   test('youdaozhiyun always uses openai-completions', () => {

@@ -6,7 +6,7 @@ import os from 'os';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
-import { normalizeAgentAvatarIcon } from '../shared/agent/avatar';
+import { AgentId, normalizeAgentAvatarIcon } from '../shared/agent';
 import { COWORK_MESSAGE_PAGE_SIZE, COWORK_SESSION_PAGE_SIZE } from '../shared/cowork/constants';
 
 
@@ -533,6 +533,19 @@ CoworkConfig,
   | 'dreamingTimezone'
 >>;
 
+export type PluginSource = 'npm' | 'clawhub' | 'git' | 'local';
+
+export interface UserInstalledPlugin {
+  pluginId: string;
+  source: PluginSource;
+  spec: string;
+  registry?: string;
+  version?: string;
+  enabled: boolean;
+  installedAt: number;
+  config?: Record<string, unknown>;
+}
+
 
 let cachedDefaultSystemPrompt: string | null = null;
 
@@ -778,19 +791,50 @@ export class CoworkStore {
       .run(...values);
   }
 
+  listSessionIdsByAgent(agentId: string): string[] {
+    const rows = this.getAll<{ id: string }>(
+      'SELECT id FROM cowork_sessions WHERE agent_id = ?',
+      [agentId],
+    );
+    return rows.map(row => row.id);
+  }
+
+  private deleteSessionRows(ids: string[]): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    this.db.prepare(`DELETE FROM cowork_messages WHERE session_id IN (${placeholders})`).run(...ids);
+    this.db.prepare(`DELETE FROM cowork_sessions WHERE id IN (${placeholders})`).run(...ids);
+  }
+
+  private deleteSessionsForAgent(agentId: string): string[] {
+    const sessionIds = this.listSessionIdsByAgent(agentId);
+    for (const sessionId of sessionIds) {
+      this.markMemorySourcesInactiveBySession(sessionId);
+    }
+    this.deleteSessionRows(sessionIds);
+    return sessionIds;
+  }
+
   deleteSession(id: string): void {
-    this.markMemorySourcesInactiveBySession(id);
-    this.db.prepare('DELETE FROM cowork_sessions WHERE id = ?').run(id);
+    const deleteSession = this.db.transaction((sessionId: string) => {
+      this.markMemorySourcesInactiveBySession(sessionId);
+      this.deleteSessionRows([sessionId]);
+    });
+    deleteSession(id);
     this.markOrphanImplicitMemoriesStale();
   }
 
   deleteSessions(ids: string[]): void {
-    if (ids.length === 0) return;
-    for (const id of ids) {
-      this.markMemorySourcesInactiveBySession(id);
-    }
-    const placeholders = ids.map(() => '?').join(',');
-    this.db.prepare(`DELETE FROM cowork_sessions WHERE id IN (${placeholders})`).run(...ids);
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    if (uniqueIds.length === 0) return;
+
+    const deleteSessions = this.db.transaction((sessionIds: string[]) => {
+      for (const id of sessionIds) {
+        this.markMemorySourcesInactiveBySession(id);
+      }
+      this.deleteSessionRows(sessionIds);
+    });
+    deleteSessions(uniqueIds);
     this.markOrphanImplicitMemoriesStale();
   }
 
@@ -2010,28 +2054,37 @@ export class CoworkStore {
       return this.createAgent({ ...request, id: `${id}-${Date.now()}` });
     }
 
-    this.db
-      .prepare(
-        `
-      INSERT INTO agents (id, name, description, system_prompt, identity, model, working_directory, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
-    `,
-      )
-      .run(
-        id,
-        request.name,
-        request.description || '',
-        request.systemPrompt || '',
-        request.identity || '',
-        request.model || '',
-        request.workingDirectory || '',
-        normalizeAgentAvatarIcon(request.icon),
-        JSON.stringify(request.skillIds || []),
-        request.source || 'custom',
-        request.presetId || '',
-        now,
-        now,
-      );
+    let removedOrphanSessionCount = 0;
+    const createAgent = this.db.transaction(() => {
+      removedOrphanSessionCount = this.deleteSessionsForAgent(id).length;
+
+      this.db
+        .prepare(
+          `
+        INSERT INTO agents (id, name, description, system_prompt, identity, model, working_directory, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
+      `,
+        )
+        .run(
+          id,
+          request.name,
+          request.description || '',
+          request.systemPrompt || '',
+          request.identity || '',
+          request.model || '',
+          request.workingDirectory || '',
+          normalizeAgentAvatarIcon(request.icon),
+          JSON.stringify(request.skillIds || []),
+          request.source || 'custom',
+          request.presetId || '',
+          now,
+          now,
+        );
+    });
+    createAgent();
+    if (removedOrphanSessionCount > 0) {
+      this.markOrphanImplicitMemoriesStale();
+    }
 
     return this.getAgent(id)!;
   }
@@ -2110,9 +2163,23 @@ export class CoworkStore {
   }
 
   deleteAgent(id: string): boolean {
-    if (id === 'main') return false; // Cannot delete default agent
-    this.db.prepare('DELETE FROM agents WHERE id = ? AND is_default = 0').run(id);
-    return true;
+    if (id === AgentId.Main) return false; // Cannot delete default agent
+
+    const deleteAgent = this.db.transaction((agentId: string): boolean => {
+      const result = this.db.prepare('DELETE FROM agents WHERE id = ? AND is_default = 0').run(agentId);
+      if (result.changes === 0) {
+        return false;
+      }
+
+      this.deleteSessionsForAgent(agentId);
+      return true;
+    });
+
+    const deleted = deleteAgent(id);
+    if (deleted) {
+      this.markOrphanImplicitMemoriesStale();
+    }
+    return deleted;
   }
 
   private mapAgentRow(row: {
@@ -2166,5 +2233,104 @@ export class CoworkStore {
       'SELECT MAX(pin_order) as max_order FROM agents WHERE pinned = 1',
     );
     return (row?.max_order ?? 0) + 1;
+  }
+
+  // ─── User Plugins ───────────────────────────────────────────────────
+
+  listUserPlugins(): UserInstalledPlugin[] {
+    const rows = this.getAll<{
+      plugin_id: string;
+      source: string;
+      spec: string;
+      registry: string | null;
+      version: string | null;
+      enabled: number;
+      installed_at: number;
+      config: string | null;
+    }>('SELECT * FROM user_plugins ORDER BY installed_at ASC');
+
+    return rows.map(row => ({
+      pluginId: row.plugin_id,
+      source: row.source as PluginSource,
+      spec: row.spec,
+      registry: row.registry || undefined,
+      version: row.version || undefined,
+      enabled: Boolean(row.enabled),
+      installedAt: row.installed_at,
+      config: row.config ? JSON.parse(row.config) as Record<string, unknown> : undefined,
+    }));
+  }
+
+  addUserPlugin(plugin: UserInstalledPlugin): void {
+    this.db.prepare(
+      `INSERT INTO user_plugins (plugin_id, source, spec, registry, version, enabled, installed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(plugin_id) DO UPDATE SET
+         source = excluded.source,
+         spec = excluded.spec,
+         registry = excluded.registry,
+         version = excluded.version,
+         enabled = excluded.enabled,
+         installed_at = excluded.installed_at`,
+    ).run(
+      plugin.pluginId,
+      plugin.source,
+      plugin.spec,
+      plugin.registry || null,
+      plugin.version || null,
+      plugin.enabled ? 1 : 0,
+      plugin.installedAt,
+    );
+  }
+
+  removeUserPlugin(pluginId: string): void {
+    this.db.prepare('DELETE FROM user_plugins WHERE plugin_id = ?').run(pluginId);
+  }
+
+  setUserPluginEnabled(pluginId: string, enabled: boolean): void {
+    this.db.prepare('UPDATE user_plugins SET enabled = ? WHERE plugin_id = ?')
+      .run(enabled ? 1 : 0, pluginId);
+  }
+
+  getUserPluginConfig(pluginId: string): Record<string, unknown> | null {
+    const row = this.getOne<{ config: string | null }>(
+      'SELECT config FROM user_plugins WHERE plugin_id = ?', [pluginId],
+    );
+    if (!row?.config) return null;
+    try {
+      return JSON.parse(row.config) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  setUserPluginConfig(pluginId: string, config: Record<string, unknown>): void {
+    this.db.prepare('UPDATE user_plugins SET config = ? WHERE plugin_id = ?')
+      .run(JSON.stringify(config), pluginId);
+  }
+
+  getUserPlugin(pluginId: string): UserInstalledPlugin | undefined {
+    const row = this.getOne<{
+      plugin_id: string;
+      source: string;
+      spec: string;
+      registry: string | null;
+      version: string | null;
+      enabled: number;
+      installed_at: number;
+      config: string | null;
+    }>('SELECT * FROM user_plugins WHERE plugin_id = ?', [pluginId]);
+
+    if (!row) return undefined;
+    return {
+      pluginId: row.plugin_id,
+      source: row.source as PluginSource,
+      spec: row.spec,
+      registry: row.registry || undefined,
+      version: row.version || undefined,
+      enabled: Boolean(row.enabled),
+      installedAt: row.installed_at,
+      config: row.config ? JSON.parse(row.config) as Record<string, unknown> : undefined,
+    };
   }
 }

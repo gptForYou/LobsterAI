@@ -496,6 +496,7 @@ export interface WeixinOpenClawConfig {
 
 export interface WeixinGatewayStatus {
   connected: boolean;
+  accountId: string | null;
   startedAt: number | null;
   lastError: string | null;
   lastInboundAt: number | null;
@@ -995,6 +996,7 @@ export const DEFAULT_POPO_MULTI_INSTANCE_STATUS: PopoMultiInstanceStatus = { ins
 
 export const DEFAULT_WEIXIN_STATUS: WeixinGatewayStatus = {
   connected: false,
+  accountId: null,
   startedAt: null,
   lastError: null,
   lastInboundAt: null,

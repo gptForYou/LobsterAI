@@ -20,11 +20,10 @@ import FolderOpenIcon from '../icons/FolderOpenIcon';
 import LinkIcon from '../icons/LinkIcon';
 import PencilSquareIcon from '../icons/PencilSquareIcon';
 import PlusCircleIcon from '../icons/PlusCircleIcon';
-import PuzzleIcon from '../icons/PuzzleIcon';
 import SearchIcon from '../icons/SearchIcon';
+import SkillIcon from '../icons/SkillIcon';
 import TrashIcon from '../icons/TrashIcon';
 import UploadIcon from '../icons/UploadIcon';
-import Tooltip, { TooltipPosition } from '../ui/Tooltip';
 import SkillSecurityReport from './SkillSecurityReport';
 
 type SkillTab = 'installed' | 'marketplace';
@@ -736,7 +735,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="w-7 h-7 rounded-lg bg-surface flex items-center justify-center flex-shrink-0">
-                    <PuzzleIcon className="h-4 w-4 text-secondary" />
+                    <SkillIcon className="h-4 w-4 text-secondary" />
                   </div>
                   <span className="text-sm font-medium text-foreground truncate">
                     {skill.name}
@@ -770,16 +769,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 </div>
               </div>
 
-              <Tooltip
-                content={skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)}
-                position={TooltipPosition.Bottom}
-                maxWidth="360px"
-                className="block w-full"
-              >
-                <p className="text-xs text-secondary line-clamp-2 mb-2">
-                  {skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)}
-                </p>
-              </Tooltip>
+              <p className="text-xs text-secondary line-clamp-2 mb-2">
+                {skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)}
+              </p>
 
               <div className="flex items-center justify-between text-[10px] text-secondary">
                 <div className="flex items-center gap-2">
@@ -848,7 +840,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <div className="w-7 h-7 rounded-lg bg-surface flex items-center justify-center flex-shrink-0">
-                      <PuzzleIcon className="h-4 w-4 text-secondary" />
+                      <SkillIcon className="h-4 w-4 text-secondary" />
                     </div>
                     <span className="text-sm font-medium text-foreground truncate">
                       {skill.name}
@@ -893,16 +885,9 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                   </div>
                 </div>
 
-                <Tooltip
-                  content={resolveLocalizedText(skill.description)}
-                  position={TooltipPosition.Bottom}
-                  maxWidth="360px"
-                  className="block w-full"
-                >
-                  <p className="text-xs text-secondary line-clamp-2 mb-2">
-                    {resolveLocalizedText(skill.description)}
-                  </p>
-                </Tooltip>
+                <p className="text-xs text-secondary line-clamp-2 mb-2">
+                  {resolveLocalizedText(skill.description)}
+                </p>
 
                 <div className="flex items-center gap-2 text-[10px] text-secondary">
                   {skill.source?.from && (
@@ -947,7 +932,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-9 h-9 rounded-lg bg-background flex items-center justify-center flex-shrink-0">
-                  <PuzzleIcon className="h-5 w-5 text-secondary" />
+                  <SkillIcon className="h-5 w-5 text-secondary" />
                 </div>
                 <div className="min-w-0">
                   <div className="text-base font-semibold text-foreground truncate">
@@ -1048,7 +1033,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-9 h-9 rounded-lg bg-background flex items-center justify-center flex-shrink-0">
-                  <PuzzleIcon className="h-5 w-5 text-secondary" />
+                  <SkillIcon className="h-5 w-5 text-secondary" />
                 </div>
                 <div className="min-w-0">
                   <div className="text-base font-semibold text-foreground truncate">

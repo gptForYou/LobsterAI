@@ -6,14 +6,20 @@
  *
  * The system dictation UI appears and types recognized text
  * directly into the currently focused input element.
+ *
+ * Returns the result so callers can react to errors (e.g. permission_denied on macOS).
  */
-export async function triggerSystemDictation(): Promise<void> {
+export async function triggerSystemDictation(): Promise<{ success: boolean; error?: string }> {
   try {
+    console.debug('[Voice] Requesting system dictation');
     const result = await window.electron.voice.triggerDictation();
+    console.debug('[Voice] System dictation result:', result);
     if (!result.success) {
       console.warn('[Voice] triggerDictation failed:', result.error);
     }
+    return result;
   } catch (err) {
     console.warn('[Voice] triggerDictation error:', err);
+    return { success: false, error: 'unknown' };
   }
 }

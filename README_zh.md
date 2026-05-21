@@ -79,6 +79,9 @@ npm run electron:dev:openclaw
 
 # 后续运行：如果锁定版本未变，自动跳过构建
 npm run electron:dev:openclaw
+
+# 渠道包
+KEYFROM=xxx npm run electron:dev:openclaw
 ```
 
 默认 OpenClaw 源码会被克隆/管理在 `../openclaw`（相对于本仓库）。可通过环境变量覆盖：
@@ -131,7 +134,30 @@ npm run dist:win
 
 # Linux (.AppImage)
 npm run dist:linux
+
+# 渠道包
+# macOS - 仅 Intel
+KEYFROM=xxx npm run dist:mac:x64
+
+# macOS - 仅 Apple Silicon
+KEYFROM=xxx npm run dist:mac:arm64
+
+# Windows (.exe NSIS 安装包)
+npx cross-env KEYFROM=xxx npm run dist:win
 ```
+
+```bash
+# 渠道包
+# macOS - 仅 Intel
+KEYFROM=baidu npm run dist:mac:x64
+
+# macOS - 仅 Apple Silicon
+KEYFROM=baidu npm run dist:mac:arm64
+
+# Windows (.exe NSIS 安装包)
+npx cross-env KEYFROM=baidu npm run dist:win
+```
+
 
 桌面端打包（macOS / Windows / Linux）都会把预构建的 OpenClaw runtime 内置到 `Resources/cfmind`。
 锁定的 OpenClaw 版本（`package.json` → `openclaw.version`）在打包时会自动拉取并构建，无需手动操作。

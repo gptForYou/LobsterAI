@@ -22,6 +22,7 @@ interface TooltipProps {
   delay?: number;
   maxWidth?: string;
   disabled?: boolean;
+  multiline?: boolean;
 }
 
 const Tooltip: React.FC<TooltipProps> = ({
@@ -33,6 +34,7 @@ const Tooltip: React.FC<TooltipProps> = ({
   delay = 400,
   maxWidth = '18rem',
   disabled = false,
+  multiline = false,
 }) => {
   const [isVisible, setIsVisible] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -74,7 +76,8 @@ const Tooltip: React.FC<TooltipProps> = ({
           style={{ maxWidth }}
           className={`absolute z-[100] pointer-events-none rounded-md border border-border
             bg-surface-overlay px-2 py-1 text-[11px] leading-4 text-foreground shadow-lg
-            whitespace-nowrap backdrop-blur-sm ${positionClassName} ${alignClassName}`}
+            ${multiline ? 'whitespace-pre-wrap break-words' : 'whitespace-nowrap'}
+            backdrop-blur-sm ${positionClassName} ${alignClassName}`}
         >
           {content}
         </div>

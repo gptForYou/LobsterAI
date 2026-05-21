@@ -196,6 +196,30 @@ export class SqliteStore {
       );
     `);
 
+    // Create user plugins table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS user_plugins (
+        plugin_id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        spec TEXT NOT NULL,
+        registry TEXT,
+        version TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        installed_at INTEGER NOT NULL
+      );
+    `);
+
+    // Migration: add config column to user_plugins
+    try {
+      const pluginCols = this.db.pragma('table_info(user_plugins)') as Array<{ name: string }>;
+      if (!pluginCols.some(c => c.name === 'config')) {
+        this.db.exec('ALTER TABLE user_plugins ADD COLUMN config TEXT;');
+        this.didRunMigration = true;
+      }
+    } catch {
+      // Migration not needed
+    }
+
     // Migrations - safely add columns if they don't exist
     try {
       // Check if execution_mode column exists

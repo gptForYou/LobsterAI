@@ -12,7 +12,7 @@ import { imService } from '../../services/im';
 import type { RootState } from '../../store';
 import type { Model } from '../../store/slices/modelSlice';
 import type { PresetAgent } from '../../types/agent';
-import type { DingTalkInstanceConfig, DiscordInstanceConfig, FeishuInstanceConfig, IMGatewayConfig, PopoInstanceConfig, QQInstanceConfig, WecomInstanceConfig } from '../../types/im';
+import type { DingTalkInstanceConfig, DiscordInstanceConfig, FeishuInstanceConfig, IMGatewayConfig, NimInstanceConfig, PopoInstanceConfig, QQInstanceConfig, TelegramInstanceConfig, WecomInstanceConfig } from '../../types/im';
 import { getAgentDisplayNameById } from '../../utils/agentDisplay';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
@@ -24,10 +24,10 @@ import AgentDetailToolbar from './AgentDetailToolbar';
 import AgentSkillSelector from './AgentSkillSelector';
 import { AgentConfirmDialogVariant, AgentDetailTab } from './constants';
 
-type MultiInstancePlatform = 'dingtalk' | 'feishu' | 'qq' | 'wecom' | 'discord' | 'popo';
-type MultiInstanceConfig = DingTalkInstanceConfig | FeishuInstanceConfig | QQInstanceConfig | WecomInstanceConfig | DiscordInstanceConfig | PopoInstanceConfig;
+type MultiInstancePlatform = 'dingtalk' | 'feishu' | 'qq' | 'wecom' | 'nim' | 'telegram' | 'discord' | 'popo';
+type MultiInstanceConfig = DingTalkInstanceConfig | FeishuInstanceConfig | QQInstanceConfig | WecomInstanceConfig | NimInstanceConfig | TelegramInstanceConfig | DiscordInstanceConfig | PopoInstanceConfig;
 
-const MULTI_INSTANCE_PLATFORMS: MultiInstancePlatform[] = ['dingtalk', 'feishu', 'qq', 'wecom', 'discord', 'popo'];
+const MULTI_INSTANCE_PLATFORMS: MultiInstancePlatform[] = ['dingtalk', 'feishu', 'qq', 'wecom', 'nim', 'telegram', 'discord', 'popo'];
 
 const isMultiInstancePlatform = (platform: Platform): platform is MultiInstancePlatform =>
   MULTI_INSTANCE_PLATFORMS.includes(platform as MultiInstancePlatform);
@@ -56,7 +56,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
   const [presetTemplates, setPresetTemplates] = useState<PresetAgent[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
-  const [activeTab, setActiveTab] = useState<AgentDetailTab>(AgentDetailTab.Prompt);
+  const [activeTab, setActiveTab] = useState<AgentDetailTab>(AgentDetailTab.Identity);
   const globalSelectedModel = useSelector((state: RootState) => state.model.defaultSelectedModel);
   const agents = useSelector((state: RootState) => state.agent.agents);
   const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
@@ -67,7 +67,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
   const initialUserInfoRef = useRef('');
   const initializedOpenRef = useRef(false);
 
-  // IM binding state — keys are 'telegram' (single) or 'dingtalk:<instanceId>' (multi)
+  // IM binding state — keys are platform names or `platform:<instanceId>` for multi-instance platforms.
   const [imConfig, setImConfig] = useState<IMGatewayConfig | null>(null);
   const [boundKeys, setBoundKeys] = useState<Set<string>>(new Set());
 
@@ -155,10 +155,10 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
     setName(isEn && preset.nameEn ? preset.nameEn : preset.name);
     setDescription(isEn && preset.descriptionEn ? preset.descriptionEn : preset.description);
     setSystemPrompt(isEn && preset.systemPromptEn ? preset.systemPromptEn : preset.systemPrompt);
-    setIdentity('');
+    setIdentity(isEn && preset.identityEn ? preset.identityEn : preset.identity);
     setIcon(preset.icon?.trim() || DefaultAgentAvatarIcon);
     setSkillIds(preset.skillIds ?? []);
-    setActiveTab(AgentDetailTab.Prompt);
+    setActiveTab(AgentDetailTab.Identity);
     setShowTemplatePicker(false);
   };
 
@@ -253,6 +253,20 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
     return getAgentDisplayNameById(aid, agents);
   };
 
+  const renderToggle = (isOn: boolean) => (
+    <div
+      className={`relative w-9 h-5 rounded-full transition-colors ${
+        isOn ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
+      }`}
+    >
+      <div
+        className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+          isOn ? 'translate-x-4' : 'translate-x-0.5'
+        }`}
+      />
+    </div>
+  );
+
   const tabs: { key: AgentDetailTab; label: string }[] = [
     { key: AgentDetailTab.Identity, label: i18nService.t('coworkBootstrapIdentityTitle') },
     { key: AgentDetailTab.Prompt, label: i18nService.t('coworkBootstrapSoulTitle') },
@@ -282,7 +296,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
     </div>
   );
 
-  const content = (
+  const editorContent = (
     <>
       <div className="flex shrink-0 items-start justify-between gap-4 px-7 py-5">
         <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -424,15 +438,15 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
                           const isBound = boundKeys.has(bindingKey);
                           const bindings = imConfig?.settings?.platformAgentBindings || {};
                           const otherAgentId = bindings[bindingKey];
-                          const boundToOther = !!otherAgentId;
+                          const boundToOther = Boolean(otherAgentId && !isBound);
                           const otherAgentName = boundToOther ? getAgentName(otherAgentId) : null;
                           return (
                             <div
                               key={inst.instanceId}
                               className={`flex items-center justify-between px-3 py-2 pl-14 transition-colors cursor-pointer hover:bg-surface-raised ${
                                 idx < enabledInstances.length - 1 ? 'border-b border-border-subtle' : ''
-                              } ${boundToOther ? 'opacity-55' : ''}`}
-                              onClick={() => !boundToOther && handleToggleIMBinding(bindingKey)}
+                              }`}
+                              onClick={() => handleToggleIMBinding(bindingKey)}
                             >
                               <div className="flex items-center gap-2">
                                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
@@ -445,21 +459,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
                                   </span>
                                 )}
                               </div>
-                              {boundToOther ? (
-                                <div className="w-9 h-5" />
-                              ) : (
-                                <div
-                                  className={`relative w-9 h-5 rounded-full transition-colors ${
-                                    isBound ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                                  }`}
-                                >
-                                  <div
-                                    className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                                      isBound ? 'translate-x-4' : 'translate-x-0.5'
-                                    }`}
-                                  />
-                                </div>
-                              )}
+                              {renderToggle(isBound)}
                             </div>
                           );
                         })}
@@ -472,17 +472,17 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
                   const bound = boundKeys.has(platform);
                   const bindings = imConfig?.settings?.platformAgentBindings || {};
                   const otherAgentId = bindings[platform];
-                  const boundToOther = configured && !!otherAgentId;
+                  const boundToOther = Boolean(configured && otherAgentId && !bound);
                   const otherAgentName = boundToOther ? getAgentName(otherAgentId) : null;
                   return (
                     <div
                       key={platform}
                       className={`flex items-center justify-between px-3 py-2.5 rounded-lg transition-colors ${
-                        configured && !boundToOther
+                        configured
                           ? 'hover:bg-surface-raised cursor-pointer'
-                          : boundToOther ? 'opacity-55' : 'opacity-50'
+                          : 'opacity-50'
                       }`}
-                      onClick={() => configured && !boundToOther && handleToggleIMBinding(platform)}
+                      onClick={() => configured && handleToggleIMBinding(platform)}
                     >
                       <div className="flex items-center gap-3">
                         <div className="flex h-8 w-8 items-center justify-center">
@@ -506,19 +506,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
                       </div>
                       <div className="flex items-center gap-2">
                         {configured ? (
-                          boundToOther ? <div className="w-9 h-5" /> : (
-                            <div
-                              className={`relative w-9 h-5 rounded-full transition-colors ${
-                                bound ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'
-                              }`}
-                            >
-                              <div
-                                className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                                  bound ? 'translate-x-4' : 'translate-x-0.5'
-                                }`}
-                              />
-                            </div>
-                          )
+                          renderToggle(bound)
                         ) : (
                           <span className="text-xs text-secondary/50">
                             {i18nService.t('agentIMNotConfigured') || 'Not configured'}
@@ -555,31 +543,33 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
     </>
   );
 
+  const closeTemplatePicker = () => setShowTemplatePicker(false);
+
+  const content = showTemplatePicker ? (
+    <AgentTemplatePickerContent
+      presets={presetTemplates}
+      loading={templatesLoading}
+      onClose={closeTemplatePicker}
+      onNew={closeTemplatePicker}
+      onSelect={handleApplyTemplate}
+    />
+  ) : editorContent;
+
   return (
     <>
       {presentation === 'page' ? (
-        <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-border/80 bg-surface shadow-sm">
+        <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-surface bg-surface shadow-sm">
           {content}
         </div>
       ) : (
         <Modal
           isOpen={isOpen}
-          onClose={handleClose}
+          onClose={showTemplatePicker ? closeTemplatePicker : handleClose}
           overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/10 dark:bg-black/50"
-          className="w-[calc(100vw-56px)] max-w-[854px] h-[82vh] max-h-[664px] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.16)] bg-surface border border-border/80 flex flex-col overflow-hidden"
+          className="w-[calc(100vw-56px)] max-w-[854px] h-[82vh] max-h-[664px] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.16)] bg-surface border border-surface flex flex-col overflow-hidden"
         >
           {content}
         </Modal>
-      )}
-
-      {showTemplatePicker && (
-        <AgentTemplatePickerModal
-          presets={presetTemplates}
-          loading={templatesLoading}
-          onClose={() => setShowTemplatePicker(false)}
-          onNew={() => setShowTemplatePicker(false)}
-          onSelect={handleApplyTemplate}
-        />
       )}
 
       {showUnsavedConfirm && (
@@ -597,7 +587,7 @@ const AgentCreateModal: React.FC<AgentCreateModalProps> = ({
   );
 };
 
-const AgentTemplatePickerModal: React.FC<{
+const AgentTemplatePickerContent: React.FC<{
   presets: PresetAgent[];
   loading: boolean;
   onClose: () => void;
@@ -607,13 +597,8 @@ const AgentTemplatePickerModal: React.FC<{
   const isEn = i18nService.getLanguage() === 'en';
 
   return (
-    <Modal
-      isOpen
-      onClose={onClose}
-      overlayClassName="fixed inset-0 z-[60] flex items-center justify-center bg-black/10 dark:bg-black/50"
-      className="w-[calc(100vw-56px)] max-w-[760px] max-h-[82vh] rounded-xl border border-border/80 bg-surface shadow-[0_12px_40px_rgba(0,0,0,0.16)] overflow-hidden flex flex-col"
-    >
-      <div className="flex shrink-0 items-center justify-between gap-3 px-5 py-4">
+    <>
+      <div className="flex shrink-0 items-center justify-between gap-3 px-7 py-5">
         <h2 className="text-lg font-semibold text-foreground">
           {i18nService.t('agentTemplateTitle')}
         </h2>
@@ -631,7 +616,7 @@ const AgentTemplatePickerModal: React.FC<{
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-7">
         {loading ? (
           <div className="flex h-40 items-center justify-center text-sm text-secondary">
             {i18nService.t('loading')}
@@ -673,7 +658,7 @@ const AgentTemplatePickerModal: React.FC<{
           </div>
         )}
       </div>
-    </Modal>
+    </>
   );
 };
 

@@ -2,8 +2,6 @@ export type ArtifactType = 'html' | 'svg' | 'image' | 'mermaid' | 'code' | 'mark
 
 export const PREVIEWABLE_ARTIFACT_TYPES = new Set<ArtifactType>(['html', 'svg', 'mermaid', 'image', 'markdown', 'text', 'document']);
 
-export type ArtifactSource = 'codeblock' | 'tool';
-
 export interface Artifact {
   id: string;
   messageId: string;

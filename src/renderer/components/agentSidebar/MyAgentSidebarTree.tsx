@@ -43,6 +43,7 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
     patchTaskPreview,
     removeTaskPreview,
     removeTaskPreviews,
+    removeAgentTaskPreviews,
     retryLoadTasks,
     loadMoreTasks,
     collapseTasks,
@@ -79,7 +80,7 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
   const handleRenameTask = async (task: AgentSidebarTaskNode, title: string) => {
     const renamed = await coworkService.renameSession(task.id, title);
     if (renamed) {
-      patchTaskPreview(task.id, { title });
+      patchTaskPreview(task.id, { title }, { preserveUpdatedAt: true });
     }
   };
 
@@ -108,7 +109,7 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
       agentService.switchAgent(agent.id);
       await coworkService.loadSessions(agent.id);
     }
-    coworkService.clearSession();
+    coworkService.clearSession({ restoreAgentSkills: true });
     onShowCowork();
     window.setTimeout(() => {
       window.dispatchEvent(new CustomEvent('cowork:focus-input', {
@@ -120,6 +121,9 @@ const MyAgentSidebarTree: React.FC<MyAgentSidebarTreeProps> = ({
   const handleDeleteAgent = async (agent: AgentSidebarAgentNode) => {
     if (isDefaultAgentId(agent.id)) return;
     const deleted = await agentService.deleteAgent(agent.id);
+    if (deleted) {
+      removeAgentTaskPreviews(agent.id);
+    }
     if (deleted && settingsAgentId === agent.id) {
       setSettingsAgentId(null);
     }

@@ -1,7 +1,9 @@
+import { CheckIcon } from '@heroicons/react/24/outline';
 import { PlatformRegistry } from '@shared/platform';
 import React, { useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 
+import { DeliveryMode, PayloadKind, ScheduleKind, SessionTarget, WakeMode } from '../../../scheduledTask/constants';
 import type {
   ScheduledTask,
   ScheduledTaskChannelOption,
@@ -12,13 +14,16 @@ import { i18nService } from '../../services/i18n';
 import { scheduledTaskService } from '../../services/scheduledTask';
 import { RootState } from '../../store';
 import type { Model } from '../../store/slices/modelSlice';
-import { toOpenClawModelRef } from '../../utils/openclawModelRef';
+import { resolveOpenClawModelRef, toOpenClawModelRef } from '../../utils/openclawModelRef';
 import ModelSelector from '../ModelSelector';
+import ScheduledTaskTemplatePickerModal from './ScheduledTaskTemplatePickerModal';
+import { SCHEDULED_TASK_TEMPLATES, type ScheduledTaskTemplate } from './taskTemplates';
 import { formatScheduleLabel, type PlanType, scheduleToPlanInfo } from './utils';
 
 interface TaskFormProps {
   mode: 'create' | 'edit';
   task?: ScheduledTask;
+  initialTemplate?: ScheduledTaskTemplate | null;
   onCancel: () => void;
   onSaved: (newTaskId?: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
@@ -113,22 +118,6 @@ const CRON_QUICK_PICKS: Array<{ labelKey: string; expr: string }> = [
   { labelKey: 'scheduledTasksFormCronQuickEvery15min', expr: '*/15 * * * *' },
 ];
 
-// Prompt template quick-picks: [label key, text key]
-const PROMPT_TEMPLATES: Array<{ labelKey: string; textKey: string }> = [
-  {
-    labelKey: 'scheduledTasksFormPromptTemplateDailySummary',
-    textKey: 'scheduledTasksFormPromptTemplateDailySummaryText',
-  },
-  {
-    labelKey: 'scheduledTasksFormPromptTemplateDataCheck',
-    textKey: 'scheduledTasksFormPromptTemplateDataCheckText',
-  },
-  {
-    labelKey: 'scheduledTasksFormPromptTemplateCodeReview',
-    textKey: 'scheduledTasksFormPromptTemplateCodeReviewText',
-  },
-];
-
 function isIMChannel(channel: string): boolean {
   return PlatformRegistry.isIMChannel(channel);
 }
@@ -152,15 +141,45 @@ function conversationOptionMatchesValue(
   return false;
 }
 
-function createFormState(task?: ScheduledTask): FormState {
-  if (!task) return { ...DEFAULT_FORM_STATE, ...nowDefaults() };
+function applyScheduledTaskTemplate(form: FormState, template: ScheduledTaskTemplate): FormState {
+  const dateDefaults = nowDefaults();
+  return {
+    ...form,
+    ...dateDefaults,
+    name: i18nService.t(template.titleKey),
+    planType: template.schedule.planType,
+    hour: template.schedule.hour,
+    minute: template.schedule.minute,
+    second: 0,
+    weekdays: template.schedule.weekdays ? [...template.schedule.weekdays] : form.weekdays,
+    monthDay: template.schedule.monthDay ?? form.monthDay,
+    payloadText: i18nService.t(template.promptKey),
+    cronExpr: '',
+    cronTz: '',
+    cronMode: 'builder',
+    cronBuilder: { ...DEFAULT_CRON_BUILDER },
+  };
+}
+
+export function createScheduledTaskFormState(
+  task: ScheduledTask | undefined,
+  fallbackModelRef: string,
+  template?: ScheduledTaskTemplate | null,
+): FormState {
+  if (!task) {
+    const form = { ...DEFAULT_FORM_STATE, ...nowDefaults(), modelId: fallbackModelRef };
+    return template ? applyScheduledTaskTemplate(form, template) : form;
+  }
 
   const planInfo = scheduleToPlanInfo(task.schedule);
   const rawCronExpr =
-    planInfo.cronExpr ?? (task.schedule.kind === 'cron' ? task.schedule.expr : '');
+    planInfo.cronExpr ?? (task.schedule.kind === ScheduleKind.Cron ? task.schedule.expr : '');
   const parsedBuilder = rawCronExpr
     ? (exprToCronBuilder(rawCronExpr) ?? { ...DEFAULT_CRON_BUILDER })
     : { ...DEFAULT_CRON_BUILDER };
+  const taskModelRef = task.payload.kind === PayloadKind.AgentTurn
+    ? (task.payload.model?.trim() || fallbackModelRef)
+    : '';
 
   return {
     name: task.name,
@@ -174,29 +193,29 @@ function createFormState(task?: ScheduledTask): FormState {
     second: planInfo.second,
     weekdays: planInfo.weekdays,
     monthDay: planInfo.monthDay,
-    payloadText: task.payload.kind === 'systemEvent' ? task.payload.text : task.payload.message,
+    payloadText: task.payload.kind === PayloadKind.SystemEvent ? task.payload.text : task.payload.message,
     notifyChannel: task.delivery.channel || 'none',
     notifyTo: task.delivery.to || '',
     cronExpr: rawCronExpr,
-    cronTz: planInfo.cronTz ?? (task.schedule.kind === 'cron' ? (task.schedule.tz ?? '') : ''),
+    cronTz: planInfo.cronTz ?? (task.schedule.kind === ScheduleKind.Cron ? (task.schedule.tz ?? '') : ''),
     cronMode: 'builder',
     cronBuilder: parsedBuilder,
     notifyAccountId: task.delivery.accountId,
-    modelId: task.payload.kind === 'agentTurn' ? (task.payload.model ?? '') : '',
+    modelId: taskModelRef,
   };
 }
 
 function buildScheduleInput(form: FormState): ScheduledTaskInput['schedule'] {
   if (form.planType === 'once') {
     const date = new Date(form.year, form.month - 1, form.day, form.hour, form.minute, form.second);
-    return { kind: 'at', at: date.toISOString() };
+    return { kind: ScheduleKind.At, at: date.toISOString() };
   }
 
   if (form.planType === 'cron') {
     const expr =
       form.cronMode === 'builder' ? cronBuilderToExpr(form.cronBuilder) : form.cronExpr.trim();
-    const schedule: ScheduledTaskInput['schedule'] & { kind: 'cron' } = {
-      kind: 'cron',
+    const schedule: ScheduledTaskInput['schedule'] & { kind: typeof ScheduleKind.Cron } = {
+      kind: ScheduleKind.Cron,
       expr,
     };
     if (form.cronTz.trim()) {
@@ -209,19 +228,19 @@ function buildScheduleInput(form: FormState): ScheduledTaskInput['schedule'] {
   const hr = String(form.hour);
 
   if (form.planType === 'hourly') {
-    return { kind: 'cron', expr: `${min} * * * *` };
+    return { kind: ScheduleKind.Cron, expr: `${min} * * * *` };
   }
 
   if (form.planType === 'daily') {
-    return { kind: 'cron', expr: `${min} ${hr} * * *` };
+    return { kind: ScheduleKind.Cron, expr: `${min} ${hr} * * *` };
   }
 
   if (form.planType === 'weekly') {
     const dowField = [...form.weekdays].sort((a, b) => a - b).join(',');
-    return { kind: 'cron', expr: `${min} ${hr} * * ${dowField}` };
+    return { kind: ScheduleKind.Cron, expr: `${min} ${hr} * * ${dowField}` };
   }
 
-  return { kind: 'cron', expr: `${min} ${hr} ${form.monthDay} * *` };
+  return { kind: ScheduleKind.Cron, expr: `${min} ${hr} ${form.monthDay} * *` };
 }
 
 const WEEKDAY_KEYS = [
@@ -234,6 +253,9 @@ const WEEKDAY_KEYS = [
   'scheduledTasksFormWeekSat',
 ] as const;
 
+const formPageClass = 'px-6 py-4 sm:px-8 lg:px-10';
+const formContentClass = 'mx-auto w-full max-w-[760px]';
+
 // Returns the human-readable cron description, or null if the expression is
 // syntactically invalid (wrong number of fields, parse error).
 // Distinguishes from an empty/blank expression which returns null without error.
@@ -243,17 +265,34 @@ function previewCron(expr: string): { ok: true; label: string } | { ok: false } 
   const parts = trimmed.split(/\s+/);
   if (parts.length !== 5) return { ok: false };
   try {
-    const label = formatScheduleLabel({ kind: 'cron', expr: trimmed });
+    const label = formatScheduleLabel({ kind: ScheduleKind.Cron, expr: trimmed });
     return { ok: true, label };
   } catch {
     return { ok: false };
   }
 }
 
-const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDirtyChange }) => {
-  const [form, setForm] = useState<FormState>(() => createFormState(task));
-  const initialFormRef = useRef<string>(JSON.stringify(createFormState(task)));
+const TaskForm: React.FC<TaskFormProps> = ({
+  mode,
+  task,
+  initialTemplate = null,
+  onCancel,
+  onSaved,
+  onDirtyChange,
+}) => {
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
+  const defaultSelectedModel = useSelector((state: RootState) => state.model.defaultSelectedModel);
+  const fallbackModelRef = defaultSelectedModel ? toOpenClawModelRef(defaultSelectedModel) : '';
+  const [form, setForm] = useState<FormState>(() =>
+    createScheduledTaskFormState(
+      task,
+      fallbackModelRef,
+      mode === 'create' ? initialTemplate : null,
+    )
+  );
+  const initialFormRef = useRef<string>(
+    JSON.stringify(createScheduledTaskFormState(task, fallbackModelRef)),
+  );
   const [channelOptions, setChannelOptions] = useState<ScheduledTaskChannelOption[]>(() => {
     const base: ScheduledTaskChannelOption[] = [];
     const savedChannel = task?.delivery.channel;
@@ -272,6 +311,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
     { ok: true; label: string } | { ok: false } | null
   >(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
   const isDirty = JSON.stringify(form) !== initialFormRef.current;
 
@@ -282,12 +322,18 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
   const isAdvanced = form.planType === 'advanced';
   const isCron = form.planType === 'cron';
   const showConversationSelector = isIMChannel(form.notifyChannel);
+  const isSystemEventTask = task?.payload.kind === PayloadKind.SystemEvent;
 
   useEffect(() => {
-    const nextForm = createFormState(task);
-    initialFormRef.current = JSON.stringify(nextForm);
+    const cleanForm = createScheduledTaskFormState(task, fallbackModelRef);
+    const nextForm = createScheduledTaskFormState(
+      task,
+      fallbackModelRef,
+      mode === 'create' ? initialTemplate : null,
+    );
+    initialFormRef.current = JSON.stringify(cleanForm);
     setForm(nextForm);
-  }, [task]);
+  }, [task, fallbackModelRef, initialTemplate, mode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -355,6 +401,22 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
     setForm(current => ({ ...current, ...patch }));
   };
 
+  const handleApplyTemplate = (template: ScheduledTaskTemplate) => {
+    setForm(current => applyScheduledTaskTemplate(current, template));
+    setErrors({});
+    setSubmitError(null);
+    setShowTemplatePicker(false);
+  };
+
+  const resolvedSelectedModelValue: Model | null = form.modelId
+    ? resolveOpenClawModelRef(form.modelId, availableModels)
+    : null;
+  const selectedModelIsInvalid = Boolean(form.modelId.trim() && !resolvedSelectedModelValue);
+  const selectedModelValue: Model | null = resolvedSelectedModelValue
+    ?? (form.modelId.trim()
+      ? { id: '__invalid__', name: form.modelId.split('/').pop() || form.modelId } as Model
+      : null);
+
   const validate = (): boolean => {
     const nextErrors: Record<string, string> = {};
 
@@ -363,6 +425,11 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
     }
     if (!form.payloadText.trim()) {
       nextErrors.payloadText = i18nService.t('scheduledTasksFormValidationPromptRequired');
+    }
+    if (!isSystemEventTask && !form.modelId.trim()) {
+      nextErrors.modelId = i18nService.t('scheduledTasksFormValidationModelRequired');
+    } else if (!isSystemEventTask && !resolvedSelectedModelValue) {
+      nextErrors.modelId = i18nService.t('scheduledTasksFormValidationModelUnavailable');
     }
 
     if (form.planType === 'once') {
@@ -416,23 +483,30 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
     try {
       const schedule = isAdvanced && task ? task.schedule : buildScheduleInput(form);
 
+      const payload: ScheduledTaskInput['payload'] = isSystemEventTask
+        ? {
+            kind: PayloadKind.SystemEvent,
+            text: form.payloadText.trim(),
+          }
+        : {
+            kind: PayloadKind.AgentTurn,
+            message: form.payloadText.trim(),
+            model: form.modelId,
+          };
+
       const input: ScheduledTaskInput = {
         name: form.name.trim(),
         description: '',
         enabled: true,
         schedule,
-        sessionTarget: 'isolated',
-        wakeMode: 'now',
-        payload: {
-          kind: 'agentTurn',
-          message: form.payloadText.trim(),
-          ...(form.modelId ? { model: form.modelId } : {}),
-        },
+        sessionTarget: SessionTarget.Isolated,
+        wakeMode: WakeMode.Now,
+        payload,
         delivery:
           form.notifyChannel === 'none'
-            ? { mode: 'none' }
+            ? { mode: DeliveryMode.None }
             : {
-                mode: 'announce',
+                mode: DeliveryMode.Announce,
                 channel: form.notifyChannel,
                 ...(form.notifyTo ? { to: form.notifyTo } : {}),
                 ...(form.notifyAccountId ? { accountId: form.notifyAccountId } : {}),
@@ -463,10 +537,6 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
   const labelClass = 'block text-[14px] font-normal leading-5 text-foreground/85 mb-1';
   const errorClass = 'text-xs text-red-500 mt-1';
   const hintClass = 'text-xs text-secondary mt-0.5';
-
-  const selectedModelValue: Model | null = form.modelId
-    ? (availableModels.find(m => toOpenClawModelRef(m) === form.modelId) ?? null)
-    : null;
 
   const handleModelChange = (model: Model | null) => {
     updateForm({ modelId: model ? toOpenClawModelRef(model) : '' });
@@ -775,8 +845,8 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
 
   const renderScheduleRow = () => {
     if (isAdvanced) {
-      const existingExpr = task?.schedule.kind === 'cron' ? task.schedule.expr : '';
-      const existingTz = task?.schedule.kind === 'cron' ? (task.schedule.tz ?? '') : '';
+      const existingExpr = task?.schedule.kind === ScheduleKind.Cron ? task.schedule.expr : '';
+      const existingTz = task?.schedule.kind === ScheduleKind.Cron ? (task.schedule.tz ?? '') : '';
       return (
         <div>
           <label className={labelClass}>{i18nService.t('scheduledTasksFormScheduleType')}</label>
@@ -1083,73 +1153,93 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
             </button>
 
             {channelDropdownOpen && (
-              <div className="absolute z-50 w-full mt-1 rounded-xl border border-border bg-surface shadow-lg overflow-hidden">
-                <div
-                  className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-surface-raised transition-colors"
-                  onClick={() => {
-                    updateForm({ notifyChannel: 'none', notifyTo: '', notifyAccountId: undefined });
-                    setChannelDropdownOpen(false);
-                  }}
-                >
-                  <span className="w-5 h-5" />
-                  <span className="text-sm text-foreground">
-                    {i18nService.t('scheduledTasksFormNotifyChannelNone')}
-                  </span>
-                </div>
-                {channelOptions.map(channel => {
-                  const unsupported = isChannelUnsupported(channel.value);
-                  const logo = getChannelLogo(channel.value);
-                  const platform = PlatformRegistry.platformOfChannel(channel.value);
-                  const platformLabel = platform
-                    ? i18nService.t(platform) || channel.label
-                    : channel.label;
-                  // For multi-instance options, show "平台 · 实例名"; for single-instance use platform label only.
-                  const displayName = channel.accountId
-                    ? `${platformLabel} · ${channel.label}`
-                    : platformLabel;
-                  const isActive =
-                    form.notifyChannel === channel.value &&
-                    (channel.accountId
-                      ? form.notifyAccountId === channel.accountId
-                      : !form.notifyAccountId);
-                  return (
-                    <div
-                      key={`${channel.value}:${channel.accountId ?? ''}`}
-                      className={`flex items-center gap-2 px-3 py-2 transition-colors ${
-                        unsupported
-                          ? 'opacity-50 cursor-not-allowed'
-                          : 'cursor-pointer hover:bg-surface-raised'
-                      } ${isActive ? 'bg-surface-raised' : ''}`}
-                      onClick={() => {
-                        if (!unsupported) {
-                          updateForm({
-                            notifyChannel: channel.value,
-                            notifyTo: '',
-                            notifyAccountId: channel.accountId,
-                          });
-                          setChannelDropdownOpen(false);
-                        }
-                      }}
-                    >
-                      {logo ? (
-                        <img
-                          src={logo}
-                          alt={displayName}
-                          className="w-5 h-5 object-contain rounded"
-                        />
-                      ) : (
-                        <span className="w-5 h-5" />
-                      )}
-                      <span
-                        className={`text-sm ${unsupported ? 'text-foreground-secondary' : 'text-foreground'}`}
+              <div className="absolute bottom-full z-50 mb-1 w-full rounded-xl border border-border bg-surface shadow-popover popover-enter overflow-hidden">
+                <div className="max-h-72 overflow-y-auto py-1">
+                  <button
+                    type="button"
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-left text-foreground hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors ${
+                      form.notifyChannel === DEFAULT_FORM_STATE.notifyChannel
+                        ? 'bg-claude-surfaceHover/50 dark:bg-claude-darkSurfaceHover/50'
+                        : ''
+                    }`}
+                    onClick={() => {
+                      updateForm({
+                        notifyChannel: DEFAULT_FORM_STATE.notifyChannel,
+                        notifyTo: '',
+                        notifyAccountId: undefined,
+                      });
+                      setChannelDropdownOpen(false);
+                    }}
+                  >
+                    <span className="w-5 h-5 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate text-[13px] font-normal leading-5">
+                      {i18nService.t('scheduledTasksFormNotifyChannelNone')}
+                    </span>
+                    {form.notifyChannel === DEFAULT_FORM_STATE.notifyChannel && (
+                      <CheckIcon className="h-4 w-4 shrink-0 text-emerald-500" />
+                    )}
+                  </button>
+                  {channelOptions.map(channel => {
+                    const unsupported = isChannelUnsupported(channel.value);
+                    const logo = getChannelLogo(channel.value);
+                    const platform = PlatformRegistry.platformOfChannel(channel.value);
+                    const platformLabel = platform
+                      ? i18nService.t(platform) || channel.label
+                      : channel.label;
+                    // For multi-instance options, show "平台 · 实例名"; for single-instance use platform label only.
+                    const displayName = channel.accountId
+                      ? `${platformLabel} · ${channel.label}`
+                      : platformLabel;
+                    const isActive =
+                      form.notifyChannel === channel.value &&
+                      (channel.accountId
+                        ? form.notifyAccountId === channel.accountId
+                        : !form.notifyAccountId);
+                    return (
+                      <button
+                        type="button"
+                        key={`${channel.value}:${channel.accountId ?? ''}`}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${
+                          unsupported
+                            ? 'cursor-not-allowed opacity-50'
+                            : 'text-foreground hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover'
+                        } ${isActive ? 'bg-claude-surfaceHover/50 dark:bg-claude-darkSurfaceHover/50' : ''}`}
+                        onClick={() => {
+                          if (!unsupported) {
+                            updateForm({
+                              notifyChannel: channel.value,
+                              notifyTo: '',
+                              notifyAccountId: channel.accountId,
+                            });
+                            setChannelDropdownOpen(false);
+                          }
+                        }}
                       >
-                        {unsupported
-                          ? `${displayName} (${i18nService.t('scheduledTasksChannelUnsupported')})`
-                          : displayName}
-                      </span>
-                    </div>
-                  );
-                })}
+                        {logo ? (
+                          <img
+                            src={logo}
+                            alt={displayName}
+                            className="w-5 h-5 shrink-0 object-contain rounded"
+                          />
+                        ) : (
+                          <span className="w-5 h-5 shrink-0" />
+                        )}
+                        <span
+                          className={`min-w-0 flex-1 truncate text-[13px] font-normal leading-5 ${
+                            unsupported ? 'text-foreground-secondary' : ''
+                          }`}
+                        >
+                          {unsupported
+                            ? `${displayName} (${i18nService.t('scheduledTasksChannelUnsupported')})`
+                            : displayName}
+                        </span>
+                        {isActive && (
+                          <CheckIcon className="h-4 w-4 shrink-0 text-emerald-500" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -1218,150 +1308,150 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved, onDi
   const payloadCharCount = form.payloadText.length;
 
   return (
+    <>
     <div className="flex flex-col min-h-0 h-full">
       {/* Scrollable form body */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0">
-        <h2 className="text-[14px] font-normal leading-5 text-foreground/85">
-          {mode === 'create'
-            ? i18nService.t('scheduledTasksFormCreate')
-            : i18nService.t('scheduledTasksFormUpdate')}
-        </h2>
-
-        {/* Task name */}
-        <div>
-          <label className={labelClass}>{i18nService.t('scheduledTasksFormName')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span></label>
-          <input
-            type="text"
-            value={form.name}
-            onChange={event => updateForm({ name: event.target.value })}
-            className={inputClass}
-            placeholder={i18nService.t('scheduledTasksFormNamePlaceholder')}
-          />
-          {errors.name && <p className={errorClass}>{errors.name}</p>}
-        </div>
-
-        {/* Schedule */}
-        <div>
-          {renderScheduleRow()}
-          {errors.schedule && <p className={errorClass}>{errors.schedule}</p>}
-        </div>
-
-        {/* Prompt / payload */}
-        <div>
-          <div className="flex items-end justify-between mb-1">
-            <label className={labelClass} style={{ marginBottom: 0 }}>
-              {i18nService.t('scheduledTasksFormPayloadTextAgent')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
-            </label>
-            <span className="text-xs text-secondary tabular-nums">
-              {i18nService
-                .t('scheduledTasksFormCharCount' as Parameters<typeof i18nService.t>[0])
-                .replace('{count}', String(payloadCharCount))}
-            </span>
-          </div>
-          <div className="rounded-lg border border-border bg-surface focus-within:ring-2 focus-within:ring-primary/50">
-            <textarea
-              value={form.payloadText}
-              onChange={event => updateForm({ payloadText: event.target.value })}
-              className={`${textareaInputClass} resize-y`}
-              style={{ minHeight: '80px', height: '120px' }}
-              placeholder={i18nService.t('scheduledTasksFormPromptPlaceholder')}
-            />
-            <div className="flex items-center px-2 py-1 border-t border-border/40">
-              <ModelSelector
-                dropdownDirection="up"
-                value={selectedModelValue}
-                onChange={handleModelChange}
-                defaultLabel={i18nService.t('scheduledTasksFormModelDefault')}
-              />
-            </div>
-          </div>
-          <p className={hintClass}>
-            {i18nService.t(
-              'scheduledTasksFormPayloadTextAgentHint' as Parameters<typeof i18nService.t>[0],
+      <div className={`flex-1 overflow-y-auto min-h-0 ${formPageClass}`}>
+        <div className={`${formContentClass} space-y-4`}>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-[14px] font-normal leading-5 text-foreground/85">
+              {mode === 'create'
+                ? i18nService.t('scheduledTasksFormCreate')
+                : i18nService.t('scheduledTasksFormUpdate')}
+            </h2>
+            {mode === 'create' && (
+              <button
+                type="button"
+                onClick={() => setShowTemplatePicker(true)}
+                className="h-8 shrink-0 rounded-lg border border-border bg-surface px-3 text-sm font-medium text-foreground hover:bg-surface-raised transition-colors"
+              >
+                {i18nService.t('scheduledTasksTemplateUse')}
+              </button>
             )}
-          </p>
+          </div>
 
-          {/* Prompt templates -- shown when textarea is empty */}
-          {!form.payloadText.trim() && (
-            <div className="mt-1.5">
-              <p className="text-xs text-secondary mb-1">
-                {i18nService.t(
-                  'scheduledTasksFormPromptTemplateTitle' as Parameters<typeof i18nService.t>[0],
-                )}
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {PROMPT_TEMPLATES.map(({ labelKey, textKey }) => (
-                  <button
-                    key={labelKey}
-                    type="button"
-                    onClick={() =>
-                      updateForm({
-                        payloadText: i18nService.t(textKey as Parameters<typeof i18nService.t>[0]),
-                      })
-                    }
-                    className="px-2 py-0.5 rounded-md text-xs border border-border bg-surface text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
-                  >
-                    {i18nService.t(labelKey as Parameters<typeof i18nService.t>[0])}
-                  </button>
-                ))}
-              </div>
+          {/* Task name */}
+          <div>
+            <label className={labelClass}>{i18nService.t('scheduledTasksFormName')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span></label>
+            <input
+              type="text"
+              value={form.name}
+              onChange={event => updateForm({ name: event.target.value })}
+              className={inputClass}
+              placeholder={i18nService.t('scheduledTasksFormNamePlaceholder')}
+            />
+            {errors.name && <p className={errorClass}>{errors.name}</p>}
+          </div>
+
+          {/* Schedule */}
+          <div>
+            {renderScheduleRow()}
+            {errors.schedule && <p className={errorClass}>{errors.schedule}</p>}
+          </div>
+
+          {/* Prompt / payload */}
+          <div>
+            <div className="flex items-end justify-between mb-1">
+              <label className={labelClass} style={{ marginBottom: 0 }}>
+                {i18nService.t('scheduledTasksFormPayloadTextAgent')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span>
+              </label>
+              <span className="text-xs text-secondary tabular-nums">
+                {i18nService
+                  .t('scheduledTasksFormCharCount' as Parameters<typeof i18nService.t>[0])
+                  .replace('{count}', String(payloadCharCount))}
+              </span>
             </div>
-          )}
+            <div className="rounded-lg border border-border bg-surface focus-within:ring-2 focus-within:ring-primary/50">
+              <textarea
+                value={form.payloadText}
+                onChange={event => updateForm({ payloadText: event.target.value })}
+                className={`${textareaInputClass} resize-y`}
+                style={{ minHeight: '80px', height: '120px' }}
+                placeholder={i18nService.t('scheduledTasksFormPromptPlaceholder')}
+              />
+              {!isSystemEventTask && (
+                <div className="flex items-center gap-2 px-2 py-1 border-t border-border/40">
+                  <ModelSelector
+                    dropdownDirection="up"
+                    value={selectedModelValue}
+                    onChange={handleModelChange}
+                  />
+                </div>
+              )}
+            </div>
+            {!isSystemEventTask && (errors.modelId || selectedModelIsInvalid) && (
+              <p className={errorClass}>
+                {errors.modelId || i18nService.t('scheduledTasksFormValidationModelUnavailable')}
+              </p>
+            )}
+            {errors.payloadText && <p className={errorClass}>{errors.payloadText}</p>}
+          </div>
 
-          {errors.payloadText && <p className={errorClass}>{errors.payloadText}</p>}
+          {/* Notification */}
+          {renderNotifyRow()}
         </div>
-
-        {/* Notification */}
-        {renderNotifyRow()}
       </div>
 
       {/* Submit error */}
       {submitError && (
-        <div className="mx-4 mb-2 flex items-start gap-2 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40">
-          <span className="text-xs text-red-600 dark:text-red-400 break-words min-w-0">
-            {i18nService.t('scheduledTasksFormSubmitError')}
-            {submitError}
-          </span>
-          <button
-            type="button"
-            onClick={() => setSubmitError(null)}
-            className="shrink-0 ml-auto p-0.5 text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors"
-            aria-label="dismiss"
-          >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-              <path
-                fillRule="evenodd"
-                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
+        <div className="px-6 pb-2 sm:px-8 lg:px-10">
+          <div className={`${formContentClass} flex items-start gap-2 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40`}>
+            <span className="text-xs text-red-600 dark:text-red-400 break-words min-w-0">
+              {i18nService.t('scheduledTasksFormSubmitError')}
+              {submitError}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSubmitError(null)}
+              className="shrink-0 ml-auto p-0.5 text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors"
+              aria-label="dismiss"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                <path
+                  fillRule="evenodd"
+                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </button>
+          </div>
         </div>
       )}
 
       {/* Footer */}
-      <div className="shrink-0 flex items-center justify-end gap-2 px-4 py-2.5 border-t border-border">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
-        >
-          {i18nService.t('cancel')}
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleSubmit()}
-          disabled={submitting}
-          className="px-4 py-1.5 text-[14px] font-normal leading-5 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-50"
-        >
-          {submitting
-            ? i18nService.t('saving')
-            : mode === 'create'
-              ? i18nService.t('scheduledTasksFormCreate')
-              : i18nService.t('scheduledTasksFormUpdate')}
-        </button>
+      <div className="shrink-0 px-6 py-3 sm:px-8 lg:px-10">
+        <div className={`${formContentClass} flex items-center justify-end gap-2`}>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-3 py-1.5 text-sm rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+          >
+            {i18nService.t('cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSubmit()}
+            disabled={submitting}
+            className="px-4 py-1.5 text-[14px] font-normal leading-5 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-50"
+          >
+            {submitting
+              ? i18nService.t('saving')
+              : mode === 'create'
+                ? i18nService.t('scheduledTasksFormCreate')
+                : i18nService.t('scheduledTasksFormUpdate')}
+          </button>
+        </div>
       </div>
     </div>
+    {mode === 'create' && showTemplatePicker && (
+      <ScheduledTaskTemplatePickerModal
+        templates={SCHEDULED_TASK_TEMPLATES}
+        onClose={() => setShowTemplatePicker(false)}
+        onNew={() => setShowTemplatePicker(false)}
+        onSelect={handleApplyTemplate}
+      />
+    )}
+    </>
   );
 };
 

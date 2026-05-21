@@ -1,19 +1,19 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { i18nService } from '@/services/i18n';
 import type { RootState } from '@/store';
 import {
   addArtifact,
+  ArtifactContentView,
   closePanel,
   MAX_PANEL_WIDTH,
   MIN_PANEL_WIDTH,
-  selectActiveTab,
-  selectArtifact,
+  openArtifactPreviewTab,
+  selectActivePreviewTab,
   selectPanelWidth,
-  selectSelectedArtifact,
-  setActiveTab,
   setPanelWidth,
+  setPreviewTabContentView,
 } from '@/store/slices/artifactSlice';
 import type { ArtifactType } from '@/types/artifact';
 import type { Artifact } from '@/types/artifact';
@@ -30,7 +30,41 @@ const BROWSER_OPENABLE_TYPES = new Set<ArtifactType>(['html', 'svg', 'mermaid'])
 
 const SYSTEM_OPENABLE_TYPES = new Set<ArtifactType>(['document']);
 
-const NON_CODE_TYPES = new Set<ArtifactType>(['document', 'image']);
+const NON_CODE_TYPES = new Set<ArtifactType>(['document', 'image', 'text']);
+
+const COPYABLE_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg']);
+
+const PANEL_CLOSE_DRAG_THRESHOLD = 48;
+
+function isCopyableArtifact(artifact: Artifact): boolean {
+  if (artifact.type === 'document') return false;
+  if (artifact.type === 'image') {
+    const filename = artifact.fileName || artifact.filePath || '';
+    const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
+    return COPYABLE_IMAGE_EXTENSIONS.has(ext);
+  }
+  return true;
+}
+
+function dataUrlToPngBlob(dataUrl: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Failed to get canvas context')); return; }
+      ctx.drawImage(img, 0, 0);
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('Failed to convert image to blob'));
+      }, 'image/png');
+    };
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = dataUrl;
+  });
+}
 
 function buildBrowserHtml(artifact: Artifact): string | null {
   switch (artifact.type) {
@@ -50,30 +84,37 @@ function escapeHtml(str: string): string {
 }
 
 interface ArtifactPanelProps {
+  sessionId: string;
   artifacts: Artifact[];
   minPanelWidth?: number;
   maxPanelWidth?: number;
 }
 
 const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
+  sessionId,
   artifacts,
   minPanelWidth = MIN_PANEL_WIDTH,
   maxPanelWidth = MAX_PANEL_WIDTH,
 }) => {
   const dispatch = useDispatch();
-  const selectedArtifact = useSelector(selectSelectedArtifact);
   const panelWidth = useSelector(selectPanelWidth);
-  const activeTab = useSelector(selectActiveTab);
-  const selectedArtifactId = useSelector((state: RootState) => state.artifact.selectedArtifactId);
+  const activePreviewTab = useSelector((state: RootState) => selectActivePreviewTab(state, sessionId));
   const [showFileList, setShowFileList] = useState(false);
   const fileListRef = useRef<HTMLDivElement>(null);
   const toggleBtnRef = useRef<HTMLButtonElement>(null);
 
   const previewableArtifacts = artifacts.filter(a => PREVIEWABLE_ARTIFACT_TYPES.has(a.type));
+  const artifactsById = useMemo(() => new Map(artifacts.map(artifact => [artifact.id, artifact])), [artifacts]);
+  const selectedArtifact = activePreviewTab ? artifactsById.get(activePreviewTab.artifactId) ?? null : null;
+  const selectedArtifactId = selectedArtifact?.id ?? null;
+  const activeTab = activePreviewTab?.contentView ?? ArtifactContentView.Preview;
+  const isDocumentArtifact = selectedArtifact?.type === 'document';
 
   const isResizing = useRef(false);
   const startX = useRef(0);
   const startWidth = useRef(0);
+  const previousBodyCursor = useRef('');
+  const [panelIsResizing, setPanelIsResizing] = useState(false);
   const constrainedMaxPanelWidth = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, maxPanelWidth));
   const constrainedMinPanelWidth = Math.min(
     constrainedMaxPanelWidth,
@@ -81,40 +122,55 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   );
   const constrainedPanelWidth = Math.max(constrainedMinPanelWidth, Math.min(constrainedMaxPanelWidth, panelWidth));
 
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+  const handleResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
     isResizing.current = true;
     startX.current = e.clientX;
     startWidth.current = constrainedPanelWidth;
+    previousBodyCursor.current = document.body.style.cursor;
+    document.body.style.cursor = 'col-resize';
     document.body.classList.add('select-none');
+    setPanelIsResizing(true);
 
-    const handleMouseMove = (moveEvent: MouseEvent) => {
+    const stopResizing = () => {
+      isResizing.current = false;
+      document.body.style.cursor = previousBodyCursor.current;
+      document.body.classList.remove('select-none');
+      setPanelIsResizing(false);
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', handlePointerUp);
+      document.removeEventListener('pointercancel', handlePointerUp);
+    };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
       if (!isResizing.current) return;
+      moveEvent.preventDefault();
       const nextWidth = startWidth.current + startX.current - moveEvent.clientX;
-      if (nextWidth < constrainedMinPanelWidth) {
-        isResizing.current = false;
-        document.body.classList.remove('select-none');
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
+      if (nextWidth < constrainedMinPanelWidth - PANEL_CLOSE_DRAG_THRESHOLD) {
+        stopResizing();
         dispatch(closePanel());
         return;
       }
-      dispatch(setPanelWidth(Math.min(constrainedMaxPanelWidth, nextWidth)));
+      const clampedWidth = Math.max(
+        constrainedMinPanelWidth,
+        Math.min(constrainedMaxPanelWidth, nextWidth),
+      );
+      dispatch(setPanelWidth(clampedWidth));
     };
 
-    const handleMouseUp = () => {
-      isResizing.current = false;
-      document.body.classList.remove('select-none');
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
+    const handlePointerUp = () => {
+      stopResizing();
     };
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('pointermove', handlePointerMove);
+    document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointercancel', handlePointerUp);
   }, [constrainedMaxPanelWidth, constrainedMinPanelWidth, constrainedPanelWidth, dispatch]);
 
   useEffect(() => {
     return () => {
+      document.body.style.cursor = previousBodyCursor.current;
       document.body.classList.remove('select-none');
     };
   }, []);
@@ -156,17 +212,37 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
     };
   }, [selectedArtifact?.filePath]);
 
-  const handleClose = useCallback(() => dispatch(closePanel()), [dispatch]);
   const handleSelectArtifact = useCallback((id: string) => {
-    dispatch(selectArtifact(id));
+    dispatch(openArtifactPreviewTab({ sessionId, artifactId: id }));
     setShowFileList(false);
-  }, [dispatch]);
+  }, [dispatch, sessionId]);
+
+  const handleSetContentView = useCallback((contentView: ArtifactContentView) => {
+    if (!activePreviewTab) return;
+    dispatch(setPreviewTabContentView({
+      sessionId,
+      tabId: activePreviewTab.id,
+      contentView,
+    }));
+  }, [activePreviewTab, dispatch, sessionId]);
 
   const handleCopy = useCallback(async () => {
-    if (selectedArtifact) {
+    if (!selectedArtifact) return;
+    if (selectedArtifact.type === 'image') {
+      if (selectedArtifact.filePath) {
+        const result = await window.electron?.clipboard?.writeImageFromFile(selectedArtifact.filePath);
+        if (!result?.success) {
+          window.dispatchEvent(new CustomEvent('app:showToast', { detail: result?.error || t('copyFailed') }));
+          return;
+        }
+      } else if (selectedArtifact.content) {
+        const blob = await dataUrlToPngBlob(selectedArtifact.content);
+        await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      }
+    } else {
       await navigator.clipboard.writeText(selectedArtifact.content);
-      window.dispatchEvent(new CustomEvent('app:showToast', { detail: t('messageCopied') }));
     }
+    window.dispatchEvent(new CustomEvent('app:showToast', { detail: t('messageCopied') }));
   }, [selectedArtifact]);
 
   const handleRevealInFolder = useCallback(() => {
@@ -187,10 +263,12 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
       return;
     }
 
-    // Has file on disk: open directly
+    // Has file on disk: open directly via native path
+    // NOTE: shell.openExternal with file:// URLs fails on Windows when path contains
+    // non-ASCII characters (e.g. Chinese) — ERROR_FILE_NOT_FOUND (0x2).
+    // Use shell.openPath which handles native Unicode paths correctly.
     if (selectedArtifact.filePath) {
-      const fileUrl = `file://${selectedArtifact.filePath}`;
-      window.electron?.shell?.openExternal(fileUrl);
+      window.electron?.shell?.openPath(selectedArtifact.filePath);
       return;
     }
 
@@ -253,13 +331,17 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
     <>
       {/* Drag handle */}
       <div
-        className="w-1 shrink-0 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
-        onMouseDown={handleResizeStart}
+        className="w-1 shrink-0 touch-none cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
+        onPointerDown={handleResizeStart}
       />
       <aside
         style={{ width: constrainedPanelWidth, maxWidth: constrainedMaxPanelWidth }}
         className="shrink border-l border-border bg-background flex flex-col h-full overflow-hidden relative"
       >
+        {panelIsResizing && (
+          <div className="absolute inset-0 z-30 cursor-col-resize bg-transparent" />
+        )}
+
         {/* Floating file list overlay */}
         {showFileList && (
           <div
@@ -280,9 +362,10 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
 
         {selectedArtifact ? (
           <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
-            {/* Header: file list toggle + filename + type + actions */}
+            {/* Header: current file + actions */}
             <div className="h-10 flex items-center gap-2 px-3 border-b border-border shrink-0">
               <span className="text-sm font-medium truncate">{selectedArtifact.fileName || selectedArtifact.title}</span>
+              <span className="text-xs uppercase text-muted">{selectedArtifact.type}</span>
               <span className="flex-1" />
               {selectedArtifact.filePath && (
                 <button
@@ -293,7 +376,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
                   <RefreshIcon />
                 </button>
               )}
-              {selectedArtifact.type !== 'document' && (
+              {isCopyableArtifact(selectedArtifact) && (
                 <button
                   onClick={handleCopy}
                   className="p-1 rounded text-secondary hover:text-foreground hover:bg-surface transition-colors"
@@ -344,11 +427,11 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
             </div>
 
             {/* Preview/Code tabs */}
-            <div className="flex border-b border-border shrink-0">
+            <div className={`flex border-b border-border shrink-0 ${isDocumentArtifact ? 'pl-4' : ''}`}>
               <button
-                onClick={() => dispatch(setActiveTab('preview'))}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
-                  activeTab === 'preview'
+                onClick={() => handleSetContentView(ArtifactContentView.Preview)}
+                className={`${isDocumentArtifact ? 'px-0' : 'px-3'} py-1.5 text-xs font-medium transition-colors border-b-2 ${
+                  activeTab === ArtifactContentView.Preview
                     ? 'border-primary text-primary'
                     : 'border-transparent text-secondary hover:text-foreground'
                 }`}
@@ -357,9 +440,9 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
               </button>
               {!NON_CODE_TYPES.has(selectedArtifact.type) && (
                 <button
-                  onClick={() => dispatch(setActiveTab('code'))}
+                  onClick={() => handleSetContentView(ArtifactContentView.Code)}
                   className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
-                    activeTab === 'code'
+                    activeTab === ArtifactContentView.Code
                       ? 'border-primary text-primary'
                       : 'border-transparent text-secondary hover:text-foreground'
                   }`}
@@ -371,7 +454,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
 
             {/* Render area */}
             <div className="flex-1 min-h-0 overflow-hidden">
-              {activeTab === 'preview' ? (
+              {activeTab === ArtifactContentView.Preview ? (
                 <ArtifactRenderer artifact={selectedArtifact} sessionArtifacts={artifacts} />
               ) : (
                 <CodeRenderer artifact={selectedArtifact} />
@@ -381,16 +464,6 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
         ) : (
           /* No artifact selected: show full-width file list */
           <div className="flex-1 flex flex-col h-full overflow-hidden">
-            <div className="h-10 flex items-center px-3 border-b border-border shrink-0">
-              <span className="text-xs font-medium text-secondary">{t('artifactFiles')}</span>
-              <span className="flex-1" />
-              <button
-                onClick={handleClose}
-                className="p-1 rounded text-secondary hover:text-foreground hover:bg-surface transition-colors"
-              >
-                <CloseIcon />
-              </button>
-            </div>
             <FileDirectoryView
               artifacts={previewableArtifacts}
               selectedId={selectedArtifactId}
@@ -422,12 +495,6 @@ const OpenExternalIcon = () => (
     <path d="M12 9v3.5a1.5 1.5 0 01-1.5 1.5h-7A1.5 1.5 0 012 12.5v-7A1.5 1.5 0 013.5 4H7" />
     <path d="M10 2h4v4" />
     <path d="M7 9l7-7" />
-  </svg>
-);
-
-const CloseIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-    <path d="M4 4l8 8M12 4l-8 8" />
   </svg>
 );
 

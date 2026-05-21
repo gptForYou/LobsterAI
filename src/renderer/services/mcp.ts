@@ -1,4 +1,4 @@
-import { McpServerConfig, McpServerFormData, McpRegistryEntry, McpMarketplaceCategoryInfo, McpCategory, McpMarketplaceServer } from '../types/mcp';
+import { McpCategory, McpMarketplaceCategoryInfo, McpMarketplaceServer,McpRegistryEntry, McpServerConfig, McpServerFormData } from '../types/mcp';
 
 /**
  * Convert remote marketplace server data to McpRegistryEntry format.
@@ -131,29 +131,6 @@ class McpService {
       console.error('Failed to fetch MCP marketplace:', error);
       return null;
     }
-  }
-
-  /**
-   * Refresh the MCP Bridge: restarts MCP servers, re-discovers tools,
-   * syncs openclaw.json, and restarts the gateway.
-   * Returns the number of tools discovered.
-   */
-  async refreshBridge(): Promise<{ success: boolean; tools: number; error?: string }> {
-    try {
-      return await window.electron.mcp.refreshBridge();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to refresh MCP bridge';
-      console.error('Failed to refresh MCP bridge:', error);
-      return { success: false, tools: 0, error: message };
-    }
-  }
-
-  onBridgeSyncStart(callback: () => void): () => void {
-    return window.electron.mcp.onBridgeSyncStart(callback);
-  }
-
-  onBridgeSyncDone(callback: (data: { tools: number; error?: string }) => void): () => void {
-    return window.electron.mcp.onBridgeSyncDone(callback);
   }
 }
 

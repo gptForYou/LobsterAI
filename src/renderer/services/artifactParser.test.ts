@@ -3,7 +3,7 @@ import { describe, expect, test } from 'vitest';
 import {
   normalizeFilePathForDedup,
   parseFileLinksFromMessage,
-  parseFilePathsFromText,
+  parseFilePathsFromText, parseMediaTokensFromText,
   parseToolArtifact,
   parseToolResultMediaArtifacts,
 } from './artifactParser';
@@ -130,6 +130,66 @@ describe('parseToolResultMediaArtifacts', () => {
     expect(artifacts).toHaveLength(1);
     expect(artifacts[0].content).toBe('https://example.com/generated.png?signature=temporary');
     expect(artifacts[0].filePath).toBeUndefined();
+  });
+});
+
+describe('parseMediaTokensFromText', () => {
+  test('parses MEDIA token with Windows path (no space)', () => {
+    const content = 'MEDIA:C:\\Users\\test\\images\\output.png';
+    const artifacts = parseMediaTokensFromText(content, 'msg1', 'sess1');
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].filePath).toBe('C:\\Users\\test\\images\\output.png');
+    expect(artifacts[0].type).toBe('image');
+  });
+
+  test('parses MEDIA token with space after colon', () => {
+    const content = 'MEDIA: /tmp/output.png';
+    const artifacts = parseMediaTokensFromText(content, 'msg1', 'sess1');
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].filePath).toBe('/tmp/output.png');
+  });
+
+  test('parses macOS path with spaces (Application Support)', () => {
+    const content = 'MEDIA: /Users/test/Library/Application Support/com.lobsterai/images/output.png';
+    const artifacts = parseMediaTokensFromText(content, 'msg1', 'sess1');
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].filePath).toBe('/Users/test/Library/Application Support/com.lobsterai/images/output.png');
+    expect(artifacts[0].type).toBe('image');
+  });
+
+  test('parses backtick-wrapped path with spaces', () => {
+    const content = 'MEDIA: `/Users/test/Library/Application Support/output.png`';
+    const artifacts = parseMediaTokensFromText(content, 'msg1', 'sess1');
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].filePath).toBe('/Users/test/Library/Application Support/output.png');
+  });
+
+  test('parses file:// prefixed MEDIA path', () => {
+    const content = 'MEDIA: file:///D:/workspace/image.jpg';
+    const artifacts = parseMediaTokensFromText(content, 'msg1', 'sess1');
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].filePath).toBe('D:/workspace/image.jpg');
+  });
+
+  test('parses multiple MEDIA tokens on separate lines', () => {
+    const content = 'MEDIA: /tmp/img1.png\nMEDIA: /tmp/img2.jpg';
+    const artifacts = parseMediaTokensFromText(content, 'msg1', 'sess1');
+    expect(artifacts).toHaveLength(2);
+    expect(artifacts[0].filePath).toBe('/tmp/img1.png');
+    expect(artifacts[1].filePath).toBe('/tmp/img2.jpg');
+  });
+
+  test('ignores MEDIA token with unknown extension', () => {
+    const content = 'MEDIA: /tmp/data.xyz';
+    const artifacts = parseMediaTokensFromText(content, 'msg1', 'sess1');
+    expect(artifacts).toHaveLength(0);
+  });
+
+  test('trims trailing whitespace from path', () => {
+    const content = 'MEDIA: /tmp/output.png   ';
+    const artifacts = parseMediaTokensFromText(content, 'msg1', 'sess1');
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].filePath).toBe('/tmp/output.png');
   });
 });
 

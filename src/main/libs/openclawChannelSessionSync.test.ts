@@ -1,6 +1,7 @@
 import { expect, test, vi } from 'vitest';
 
 import {
+  buildChannelDisplayName,
   buildManagedSessionKey,
   DEFAULT_MANAGED_AGENT_ID,
   isManagedSessionKey,
@@ -72,6 +73,33 @@ test('channel sync still recognizes real channel session keys', () => {
     conversationId: 'dm:ou_123',
   });
   expect(sync.isChannelSessionKey('agent:main:main')).toBe(true);
+});
+
+test('channel sync treats stale agent ids as non-current after platform binding changes', () => {
+  const sync = new OpenClawChannelSessionSync({
+    coworkStore: {
+      getSession: () => null,
+      createSession: () => {
+        throw new Error('createSession should not be called in this test');
+      },
+    },
+    imStore: {
+      getIMSettings: () => ({
+        skillsEnabled: true,
+        platformAgentBindings: {
+          weixin: 'agent-2',
+        },
+      }),
+      getSessionMapping: () => null,
+      updateSessionLastActive: () => {},
+      deleteSessionMapping: () => {},
+      createSessionMapping: () => {},
+    },
+    getDefaultCwd: () => '/tmp',
+  });
+
+  expect(sync.isCurrentBindingKey('agent:main:openclaw-weixin:bot-1:direct:user-1')).toBe(false);
+  expect(sync.isCurrentBindingKey('agent:agent-2:openclaw-weixin:bot-1:direct:user-1')).toBe(true);
 });
 
 test('channel sync stores the real OpenClaw session key when creating a mapping', () => {
@@ -182,4 +210,105 @@ test('channel sync backfills the real OpenClaw session key for existing mappings
 
   expect(sync.resolveOrCreateSession(sessionKey)).toBe('cowork-1');
   expect(updateSessionOpenClawSessionKey).toHaveBeenCalledWith('dm:ou_123', 'feishu', sessionKey);
+});
+
+test('channel sync corrects existing mapping cwd from the current bound agent', () => {
+  const updateSession = vi.fn();
+  const sync = new OpenClawChannelSessionSync({
+    coworkStore: {
+      getSession: () => ({
+        id: 'cowork-1',
+        title: '[Feishu] ou_123',
+        claudeSessionId: null,
+        status: 'idle',
+        pinned: false,
+        cwd: '/tmp/old',
+        systemPrompt: '',
+        modelOverride: '',
+        executionMode: 'local',
+        activeSkillIds: [],
+        agentId: 'writer',
+        messages: [],
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+      createSession: () => {
+        throw new Error('createSession should not be called');
+      },
+      updateSession,
+    },
+    imStore: {
+      getIMSettings: () => ({
+        skillsEnabled: true,
+        platformAgentBindings: {
+          feishu: 'writer',
+        },
+      }),
+      getSessionMapping: () => ({
+        imConversationId: 'dm:ou_123',
+        platform: 'feishu',
+        coworkSessionId: 'cowork-1',
+        agentId: 'writer',
+        openClawSessionKey: 'agent:writer:feishu:dm:ou_123',
+        createdAt: 1,
+        lastActiveAt: 1,
+      }),
+      updateSessionLastActive: () => {},
+      deleteSessionMapping: () => {},
+      createSessionMapping: () => {},
+    },
+    getDefaultCwd: (agentId?: string) => `/repo/${agentId || 'main'}`,
+  });
+
+  const sessionKey = 'agent:writer:feishu:dm:ou_123';
+
+  expect(sync.resolveOrCreateSession(sessionKey)).toBe('cowork-1');
+  expect(updateSession).toHaveBeenCalledWith(
+    'cowork-1',
+    { cwd: '/repo/writer' },
+    { touchUpdatedAt: false },
+  );
+});
+
+// --- buildChannelDisplayName ---
+
+test('buildChannelDisplayName strips email domain and removes direct prefix', () => {
+  expect(buildChannelDisplayName('direct:alice@corp.example.com')).toBe('alice');
+});
+
+test('buildChannelDisplayName keeps group prefix', () => {
+  expect(buildChannelDisplayName('group:3911967@popo.netease.com')).toBe('group:3911967');
+});
+
+test('buildChannelDisplayName handles account:direct:peer format', () => {
+  expect(buildChannelDisplayName('bot1:direct:zhangsan@corp.netease.com')).toBe('zhangsan');
+});
+
+test('buildChannelDisplayName handles account:group:peer format', () => {
+  expect(buildChannelDisplayName('bot1:group:12345@popo.netease.com')).toBe('group:12345');
+});
+
+test('buildChannelDisplayName handles channel peerKind', () => {
+  expect(buildChannelDisplayName('channel:room-abc')).toBe('ch:room-abc');
+});
+
+test('buildChannelDisplayName passes through plain ids', () => {
+  expect(buildChannelDisplayName('123456789')).toBe('123456789');
+});
+
+test('buildChannelDisplayName passes through non-email conversationId without peerKind', () => {
+  expect(buildChannelDisplayName('dm:ou_123')).toBe('dm:ou_123');
+});
+
+test('buildChannelDisplayName truncates long results to 20 chars', () => {
+  const result = buildChannelDisplayName('direct:a_very_long_username_that_exceeds_limit@example.com');
+  expect(result.length).toBeLessThanOrEqual(20);
+  expect(result).toBe('a_very_long_username');
+});
+
+test('buildChannelDisplayName truncates long fallback ids to 20 chars', () => {
+  const result = buildChannelDisplayName('abcdefghijklmnopqrstuvwxyz1234567890');
+  expect(result.length).toBeLessThanOrEqual(20);
+  // fallback uses slice(-20)
+  expect(result).toBe('qrstuvwxyz1234567890');
 });

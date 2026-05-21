@@ -556,7 +556,7 @@ class ApiService {
     message: ChatUserMessageInput,
     onProgress?: (content: string, reasoning?: string) => void,
     history: ChatMessagePayload[] = [],
-    modelId: string = 'gemini-3-pro-preview',
+    modelId: string = 'gemini-3.1-pro-preview',
     config: ApiConfig = this.config!,
     supportsImages: boolean = false
   ): Promise<{ content: string; reasoning?: string }> {

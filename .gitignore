@@ -36,6 +36,7 @@ package-lock.json
 
 nul
 .work.env
+.keyfrom-build/
 
 .playwright-mcp/
 .cowork-temp/

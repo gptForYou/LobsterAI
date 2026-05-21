@@ -8,6 +8,7 @@ import {
 import type { AgentSidebarAgentSummary } from './types';
 import {
   collapseAgentSidebarTaskList,
+  removeAgentSidebarAgentTaskPreviews,
   removeAgentSidebarTaskPreviews,
   sortAgentSidebarAgents,
   sortAgentSidebarTasks,
@@ -118,4 +119,24 @@ test('removeAgentSidebarTaskPreviews preserves state when nothing matches', () =
   };
 
   expect(removeAgentSidebarTaskPreviews(previews, ['missing'])).toBe(previews);
+});
+
+test('removeAgentSidebarAgentTaskPreviews clears cached tasks for one agent id', () => {
+  const previews = {
+    'agent-1': [makeSession('remove-1', 100)],
+    'agent-2': [makeSession('keep-2', 200)],
+  };
+
+  const next = removeAgentSidebarAgentTaskPreviews(previews, 'agent-1');
+
+  expect(next['agent-1']).toBeUndefined();
+  expect(next['agent-2'].map((session) => session.id)).toEqual(['keep-2']);
+});
+
+test('removeAgentSidebarAgentTaskPreviews preserves state when agent cache is missing', () => {
+  const previews = {
+    'agent-1': [makeSession('keep-1', 100)],
+  };
+
+  expect(removeAgentSidebarAgentTaskPreviews(previews, 'missing-agent')).toBe(previews);
 });
