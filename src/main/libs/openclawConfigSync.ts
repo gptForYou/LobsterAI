@@ -1638,8 +1638,6 @@ export class OpenClawConfigSync {
             dreaming: {
               enabled: true,
               frequency: coworkConfig.dreamingFrequency || '0 3 * * *',
-              ...(coworkConfig.dreamingTimezone ? { timezone: coworkConfig.dreamingTimezone } : {}),
-              ...(coworkConfig.dreamingModel ? { model: coworkConfig.dreamingModel } : {}),
             },
           },
         };
