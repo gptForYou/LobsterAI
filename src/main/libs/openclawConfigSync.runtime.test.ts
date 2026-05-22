@@ -24,7 +24,13 @@ const mockRuntimeState = vi.hoisted(() => ({
     apiType: 'anthropic' | 'openai';
     authType?: 'apikey' | 'oauth';
     codingPlanEnabled: boolean;
-    models: Array<{ id: string; name: string; supportsImage?: boolean }>;
+    models: Array<{
+      id: string;
+      name: string;
+      supportsImage?: boolean;
+      contextWindow?: number;
+      customParams?: Record<string, unknown>;
+    }>;
   }>,
   rawApiConfig: {
     config: {
@@ -105,6 +111,46 @@ describe('OpenClawConfigSync runtime config output', () => {
     const { setSystemProxyEnabled } = await import('./systemProxy');
     setSystemProxyEnabled(false);
   });
+
+  const createSync = async () => {
+    const { OpenClawConfigSync } = await import('./openclawConfigSync');
+
+    return new OpenClawConfigSync({
+      engineManager: {
+        getConfigPath: () => configPath,
+        getGatewayToken: () => 'gateway-token',
+        getStateDir: () => stateDir,
+        getBaseDir: () => tmpDir,
+      } as never,
+      getCoworkConfig: () => ({
+        workingDirectory: tmpDir,
+        systemPrompt: '',
+        executionMode: 'local',
+        agentEngine: 'openclaw',
+        memoryEnabled: false,
+        memoryImplicitUpdateEnabled: false,
+        memoryLlmJudgeEnabled: false,
+        memoryGuardLevel: 'balanced',
+        memoryUserMemoriesMaxItems: 100,
+        skipMissedJobs: false,
+      }),
+      isEnterprise: () => false,
+      getTelegramInstances: () => [],
+      getDiscordOpenClawConfig: () => null,
+      getDingTalkInstances: () => [],
+      getFeishuInstances: () => [],
+      getQQInstances: () => [],
+      getWecomConfig: () => null,
+      getWecomInstances: () => [],
+      getPopoInstances: () => [],
+      getNimConfig: () => null,
+      getNeteaseBeeChanConfig: () => null,
+      getWeixinConfig: () => null,
+      getIMSettings: () => null,
+      getSkillsList: () => [],
+      getAgents: () => [],
+    });
+  };
 
   test('writes model provider env-proxy transport when system proxy is enabled', async () => {
     const { setSystemProxyEnabled } = await import('./systemProxy');
@@ -395,6 +441,100 @@ describe('OpenClawConfigSync runtime config output', () => {
       }),
     ]));
     expect(provider.models).toHaveLength(3);
+    expect(config.agents.defaults.models).toBeUndefined();
+  });
+
+  test('writes a complete agent model allowlist when any model has custom params', async () => {
+    const { ProviderName } = await import('../../shared/providers');
+
+    mockRuntimeState.proxyPort = 56646;
+    mockRuntimeState.serverModels = [
+      { modelId: 'MiniMax-M2.7-YoudaoInner', supportsImage: false },
+      { modelId: 'kimi-k2.6-inhouse-ZhiYun', supportsImage: true },
+    ];
+    mockRuntimeState.rawApiConfig = {
+      config: {
+        baseURL: 'https://api.deepseek.com',
+        apiKey: 'sk-deepseek',
+        model: 'deepseek-v4-flash',
+        apiType: 'openai',
+      },
+      providerMetadata: {
+        providerName: ProviderName.DeepSeek,
+        codingPlanEnabled: false,
+        supportsImage: false,
+        modelName: 'DeepSeek V4 Flash',
+      },
+    };
+    mockRuntimeState.enabledProviders = [
+      {
+        providerName: ProviderName.DeepSeek,
+        baseURL: 'https://api.deepseek.com',
+        apiKey: 'sk-deepseek',
+        apiType: 'openai',
+        codingPlanEnabled: false,
+        models: [
+          {
+            id: 'deepseek-v4-flash',
+            name: 'DeepSeek V4 Flash',
+            supportsImage: false,
+            customParams: { reasoning_effort: 'high' },
+          },
+          {
+            id: 'deepseek-v4-pro',
+            name: 'DeepSeek V4 Pro',
+            supportsImage: false,
+          },
+        ],
+      },
+    ];
+
+    const sync = await createSync();
+
+    const result = sync.sync('custom-params-complete-model-allowlist');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const modelDefaults = config.agents.defaults.models;
+
+    expect(modelDefaults).toEqual(expect.objectContaining({
+      'deepseek/deepseek-v4-flash': {
+        params: {
+          extra_body: {
+            reasoning_effort: 'high',
+          },
+        },
+      },
+      'deepseek/deepseek-v4-pro': {},
+      'lobsterai-server/MiniMax-M2.7-YoudaoInner': {},
+      'lobsterai-server/kimi-k2.6-inhouse-ZhiYun': {},
+    }));
+    expect(Object.keys(modelDefaults)).toEqual(expect.arrayContaining([
+      'deepseek/deepseek-v4-flash',
+      'deepseek/deepseek-v4-pro',
+      'lobsterai-server/MiniMax-M2.7-YoudaoInner',
+      'lobsterai-server/kimi-k2.6-inhouse-ZhiYun',
+    ]));
+  });
+
+  test('removes stale agent model allowlist when no model has custom params', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({
+      agents: {
+        defaults: {
+          models: {
+            'lobsterai-server/MiniMax-M2.7-YoudaoInner': {},
+          },
+        },
+      },
+    }, null, 2));
+
+    const sync = await createSync();
+
+    const result = sync.sync('remove-stale-model-allowlist');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.agents.defaults.models).toBeUndefined();
   });
 
   test('maps OpenAI OAuth mode to the OpenAI Codex provider', async () => {

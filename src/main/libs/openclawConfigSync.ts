@@ -480,6 +480,10 @@ type OpenClawProviderSelection = {
   };
 };
 
+type OpenClawAgentModelDefault = {
+  params?: Record<string, unknown>;
+};
+
 const OPENAI_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 
 const normalizeBaseUrlPath = (rawBaseUrl: string, pathName: string): string => {
@@ -866,6 +870,44 @@ const buildProviderModelCatalog = (
   ]),
 );
 
+const cloneAgentModelDefault = (
+  entry: OpenClawAgentModelDefault,
+): OpenClawAgentModelDefault => (
+  entry.params ? { params: { ...entry.params } } : {}
+);
+
+const buildCompleteAgentModelDefaults = (
+  providers: Record<string, OpenClawProviderSelection['providerConfig']>,
+  customDefaults: Record<string, OpenClawAgentModelDefault>,
+): Record<string, OpenClawAgentModelDefault> => {
+  const modelDefaults: Record<string, OpenClawAgentModelDefault> = {};
+
+  for (const [providerId, providerConfig] of Object.entries(providers)) {
+    const normalizedProviderId = providerId.trim();
+    if (!normalizedProviderId) continue;
+
+    for (const model of providerConfig.models) {
+      const modelId = model.id?.trim();
+      if (!modelId) continue;
+
+      const modelKey = `${normalizedProviderId}/${modelId}`;
+      modelDefaults[modelKey] = customDefaults[modelKey]
+        ? cloneAgentModelDefault(customDefaults[modelKey])
+        : {};
+    }
+  }
+
+  // Defensive fallback: customDefaults is normally derived while inserting into
+  // providers, but preserve any entry if a future provider path diverges.
+  for (const [modelKey, entry] of Object.entries(customDefaults)) {
+    if (!modelDefaults[modelKey]) {
+      modelDefaults[modelKey] = cloneAgentModelDefault(entry);
+    }
+  }
+
+  return modelDefaults;
+};
+
 const upsertProviderModel = (
   providerConfig: OpenClawProviderSelection['providerConfig'],
   model: OpenClawProviderSelection['providerConfig']['models'][number],
@@ -1199,7 +1241,7 @@ export class OpenClawConfigSync {
     }
 
     let allProvidersMap: Record<string, OpenClawProviderSelection['providerConfig']> = {};
-    const perModelCustomParams: Record<string, { params: Record<string, unknown> }> = {};
+    const perModelCustomDefaults: Record<string, OpenClawAgentModelDefault> = {};
     let primaryModel = '';
     let providerSelection: OpenClawProviderSelection | null = null;
 
@@ -1256,7 +1298,7 @@ export class OpenClawConfigSync {
           // directly into the outgoing API request body, bypassing the whitelist.
           if (m.customParams && Object.keys(m.customParams).length > 0) {
             const modelKey = `${sel.providerId}/${sel.sessionModelId}`;
-            perModelCustomParams[modelKey] = { params: { extra_body: { ...m.customParams } } };
+            perModelCustomDefaults[modelKey] = { params: { extra_body: { ...m.customParams } } };
           }
         }
       }
@@ -1321,6 +1363,9 @@ export class OpenClawConfigSync {
       this.isEnterprise(),
     );
     const availableProviders = buildProviderModelCatalog(allProvidersMap);
+    const agentModelDefaults = Object.keys(perModelCustomDefaults).length > 0
+      ? buildCompleteAgentModelDefaults(allProvidersMap, perModelCustomDefaults)
+      : {};
     console.log(
       `[OpenClawConfigSync] sandbox mode: ${sandboxMode} (executionMode: ${coworkConfig.executionMode || 'local'}, enterprise: ${this.isEnterprise()})`,
     );
@@ -1468,8 +1513,8 @@ export class OpenClawConfigSync {
             lightContext: true,
             isolatedSession: true,
           },
-          ...(Object.keys(perModelCustomParams).length > 0
-            ? { models: perModelCustomParams }
+          ...(Object.keys(agentModelDefaults).length > 0
+            ? { models: agentModelDefaults }
             : {}),
         },
         ...this.buildAgentsList(primaryModel, this.engineManager.getStateDir(), availableProviders, agents),
