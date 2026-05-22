@@ -177,6 +177,8 @@ export class SubagentTracker {
       if (this.subagentStatus.get(tcId) === 'running') {
         this.subagentStatus.set(tcId, 'done');
         this.store.updateSubagentRunStatus(tcId, 'done', Date.now());
+        // Persist cached messages now that completion is confirmed
+        this.tryPersistCachedMessages(tcId);
       }
     }
   }
@@ -196,6 +198,8 @@ export class SubagentTracker {
           this.subagentStatus.set(toolCallId, 'done');
           this.store.updateSubagentRunStatus(toolCallId, 'done', Date.now());
           console.log('[SubagentTracker] marked subagent as done via announce:', toolCallId);
+          // Persist cached messages now that completion is confirmed
+          this.tryPersistCachedMessages(toolCallId);
         }
         return true;
       }
@@ -564,14 +568,13 @@ export class SubagentTracker {
       // Cache locally
       this.subagentMessages.set(runId, messages);
 
-      // Persist to database for future instant loads
-      this.persistMessages(runId, messages);
-
-      // Update status if we got messages and the session appears done
-      if (messages.length > 0 && this.subagentStatus.get(runId) !== 'done') {
-        this.subagentStatus.set(runId, 'done');
-        this.store.updateSubagentRunStatus(runId, 'done', Date.now());
-        console.log('[SubagentTracker] marked subagent as done via history fallback:', runId);
+      // Only persist to database if the subagent is confirmed done/error.
+      // If still running, the history may be incomplete — persist later when
+      // done is confirmed via announce/resume/read events.
+      const currentStatus = this.subagentStatus.get(runId)
+        || this.store.getRunStatus(runId);
+      if (currentStatus === 'done' || currentStatus === 'error') {
+        this.persistMessages(runId, messages);
       }
 
       console.log('[SubagentTracker] fetchSubagentHistory: extracted', messages.length, 'display messages for runId:', runId);
@@ -628,5 +631,17 @@ export class SubagentTracker {
     } catch (error) {
       console.warn('[SubagentTracker] Failed to persist messages for runId:', runId, error);
     }
+  }
+
+  /**
+   * When a subagent is confirmed done, clear stale in-memory cache so that the
+   * next getSubTaskHistory call fetches fresh complete data from the gateway.
+   * We do NOT persist the cached messages here because they may have been fetched
+   * while the subagent was still running (incomplete). Persistence will happen
+   * on the next getSubTaskHistory call which will see status=done and persist.
+   */
+  private tryPersistCachedMessages(runId: string): void {
+    // Clear potentially stale/incomplete cached messages
+    this.subagentMessages.delete(runId);
   }
 }
