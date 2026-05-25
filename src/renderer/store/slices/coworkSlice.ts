@@ -392,6 +392,7 @@ const coworkSlice = createSlice({
           if (!inserted) {
             state.currentSession.messages.push(message);
           }
+          applyPendingMediaStatusUpdates(state, sessionId, message);
           state.currentSession.updatedAt = message.timestamp;
           state.currentSession.totalMessages += 1;
         }
