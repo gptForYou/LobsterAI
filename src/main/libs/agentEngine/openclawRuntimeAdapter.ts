@@ -132,6 +132,27 @@ type OpenClawRuntimeAdapterOptions = {
   normalizeModelRef?: (modelRef: string) => string;
 };
 
+const SessionModelPatchSource = {
+  SessionOverride: 'sessionOverride',
+  AgentModel: 'agentModel',
+} as const;
+
+type SessionModelPatchSource = typeof SessionModelPatchSource[keyof typeof SessionModelPatchSource];
+
+type SessionModelPatchState = {
+  model: string;
+  confirmedAt: number;
+  source: SessionModelPatchSource;
+  sessionKey: string;
+};
+
+type GatewayRpcHealth = {
+  degradedUntil: number;
+  consecutiveTimeouts: number;
+  lastTimeoutMethod?: string;
+  lastTimeoutAt?: number;
+};
+
 type ChatEventState = 'delta' | 'final' | 'aborted' | 'error';
 
 type ChatEventPayload = {
@@ -175,6 +196,11 @@ const GatewayStopReason = {
   Error: 'error',
   ToolUse: 'toolUse',
   ToolUseSnake: 'tool_use',
+} as const;
+
+const OpenClawKnownRuntimeError = {
+  UnexpectedEndOfJsonInput: 'Unexpected end of JSON input',
+  OnlyEmptySseDataFrames: 'Provider stream emitted too many empty SSE data frames.',
 } as const;
 
 const OpenClawHistoryRole = {
@@ -644,6 +670,18 @@ const messageHasToolCallBlock = (message: unknown): boolean => {
 const isToolUseStopReason = (stopReason: string | undefined): boolean => {
   return stopReason === GatewayStopReason.ToolUse || stopReason === GatewayStopReason.ToolUseSnake;
 };
+
+export function normalizeOpenClawRuntimeErrorMessage(errorMessage: string): string {
+  const normalized = errorMessage.trim();
+  switch (normalized) {
+    case OpenClawKnownRuntimeError.UnexpectedEndOfJsonInput:
+      return t('coworkErrorModelStreamEmptySseData');
+    case OpenClawKnownRuntimeError.OnlyEmptySseDataFrames:
+      return t('coworkErrorModelStreamOnlyEmptySseData');
+    default:
+      return errorMessage;
+  }
+}
 
 const extractTextBlocksAndSignals = (
   message: unknown,
@@ -1227,7 +1265,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private readonly confirmationModeBySession = new Map<string, 'modal' | 'text'>();
   private readonly bridgedSessions = new Set<string>();
   private readonly lastSystemPromptBySession = new Map<string, string>();
-  private readonly lastPatchedModelBySession = new Map<string, string>();
+  private readonly sessionModelPatchStateBySession = new Map<string, SessionModelPatchState>();
   private readonly sessionModelPatchQueue = new Map<string, Promise<void>>();
   private readonly gatewayHistoryCountBySession = new Map<string, number>();
   private readonly latestTurnTokenBySession = new Map<string, number>();
@@ -1325,9 +1363,19 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   // Authoritative contextTokens from sessions.list (per sessionKey).
   // Updated by pollChannelSessions and refreshSessionContextTokens.
   private sessionContextTokensCache: Map<string, number> = new Map();
+  private readonly contextUsageInFlightBySession = new Map<string, Promise<CoworkContextUsage | null>>();
+  private readonly contextUsageListInFlight = new Map<string, Promise<Record<string, unknown>[]>>();
+  private gatewayRpcHealth: GatewayRpcHealth = {
+    degradedUntil: 0,
+    consecutiveTimeouts: 0,
+  };
 
   private static readonly CONTEXT_USAGE_LIST_LIMIT = 120;
   private static readonly CONTEXT_USAGE_TARGETED_TIMEOUT_MS = 2_000;
+  private static readonly CONTEXT_USAGE_LIST_TIMEOUT_MS = 5_000;
+  private static readonly GATEWAY_RPC_DEGRADED_MS = 30_000;
+  private static readonly SESSION_MODEL_PATCH_CONFIRMED_TTL_MS = 10 * 60_000;
+  private static readonly SESSION_PATCH_TIMEOUT_MS = 30_000;
 
   private emitSessionStatus(sessionId: string, status: CoworkSessionStatus): void {
     this.emit('sessionStatus', sessionId, status);
@@ -1553,6 +1601,92 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     return undefined;
   }
 
+  private getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  private isGatewayRequestTimeout(error: unknown, method?: string): boolean {
+    const message = this.getErrorMessage(error);
+    if (method) {
+      return new RegExp(`gateway request timeout for ${method.replace('.', '\\.')}`, 'i').test(message);
+    }
+    return /gateway request timeout for /i.test(message);
+  }
+
+  private isGatewayRpcDegraded(now = Date.now()): boolean {
+    if (this.gatewayRpcHealth.degradedUntil <= now) {
+      return false;
+    }
+    return true;
+  }
+
+  private markGatewayRpcTimeout(method: string, error: unknown): void {
+    const now = Date.now();
+    const consecutiveTimeouts = this.gatewayRpcHealth.consecutiveTimeouts + 1;
+    this.gatewayRpcHealth = {
+      degradedUntil: now + OpenClawRuntimeAdapter.GATEWAY_RPC_DEGRADED_MS,
+      consecutiveTimeouts,
+      lastTimeoutMethod: method,
+      lastTimeoutAt: now,
+    };
+    console.warn(`[OpenClawRuntime] gateway RPC timed out for ${method}; session RPCs are degraded for ${OpenClawRuntimeAdapter.GATEWAY_RPC_DEGRADED_MS}ms:`, error);
+  }
+
+  private markGatewayRpcSuccess(): void {
+    if (this.gatewayRpcHealth.consecutiveTimeouts === 0 && this.gatewayRpcHealth.degradedUntil <= Date.now()) {
+      return;
+    }
+    this.gatewayRpcHealth = {
+      degradedUntil: 0,
+      consecutiveTimeouts: 0,
+    };
+  }
+
+  private recordGatewayRpcFailure(method: string, error: unknown): void {
+    if (this.isGatewayRequestTimeout(error, method)) {
+      this.markGatewayRpcTimeout(method, error);
+    }
+  }
+
+  private resetGatewayRpcHealth(): void {
+    this.gatewayRpcHealth = {
+      degradedUntil: 0,
+      consecutiveTimeouts: 0,
+    };
+  }
+
+  private getConfirmedSessionModelPatch(
+    sessionId: string,
+    sessionKey: string,
+    model: string,
+    source: SessionModelPatchSource,
+  ): SessionModelPatchState | null {
+    const state = this.sessionModelPatchStateBySession.get(sessionId);
+    if (!state) return null;
+    if (state.model !== model || state.sessionKey !== sessionKey || state.source !== source) {
+      return null;
+    }
+    if (Date.now() - state.confirmedAt > OpenClawRuntimeAdapter.SESSION_MODEL_PATCH_CONFIRMED_TTL_MS) {
+      this.sessionModelPatchStateBySession.delete(sessionId);
+      return null;
+    }
+    return state;
+  }
+
+  private rememberSessionModelPatch(
+    sessionId: string,
+    sessionKey: string,
+    model: string,
+    source: SessionModelPatchSource,
+  ): void {
+    this.sessionModelPatchStateBySession.set(sessionId, {
+      model,
+      sessionKey,
+      source,
+      confirmedAt: Date.now(),
+    });
+  }
+
   private resolveContextUsageStatus(percent: number | undefined): CoworkContextUsage['status'] {
     if (percent === undefined) return 'unknown';
     if (percent >= 90) return 'danger';
@@ -1568,6 +1702,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   } = {}): Promise<Record<string, unknown>[]> {
     const client = this.gatewayClient;
     if (!client) return [];
+    if (this.isGatewayRpcDegraded()) {
+      console.debug('[OpenClawRuntime] skipped context usage session lookup because gateway session RPCs are degraded.');
+      return [];
+    }
     const params: Record<string, unknown> = {
       limit: options.limit ?? OpenClawRuntimeAdapter.CONTEXT_USAGE_LIST_LIMIT,
     };
@@ -1577,13 +1715,34 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (options.search?.trim()) {
       params.search = options.search.trim();
     }
-    const result = await client.request<{ sessions?: unknown[] }>('sessions.list', {
+    const timeoutMs = options.timeoutMs ?? OpenClawRuntimeAdapter.CONTEXT_USAGE_LIST_TIMEOUT_MS;
+    const inFlightKey = JSON.stringify({ ...params, timeoutMs });
+    const existing = this.contextUsageListInFlight.get(inFlightKey);
+    if (existing) {
+      return existing;
+    }
+    let request: Promise<Record<string, unknown>[]>;
+    request = client.request<{ sessions?: unknown[] }>('sessions.list', {
       ...params,
-    }, { timeoutMs: options.timeoutMs ?? 5_000 });
-    const sessions = result?.sessions;
-    return Array.isArray(sessions)
-      ? sessions.filter(isRecord) as Record<string, unknown>[]
-      : [];
+    }, { timeoutMs })
+      .then((result) => {
+        this.markGatewayRpcSuccess();
+        const sessions = result?.sessions;
+        return Array.isArray(sessions)
+          ? sessions.filter(isRecord) as Record<string, unknown>[]
+          : [];
+      })
+      .catch((error) => {
+        this.recordGatewayRpcFailure('sessions.list', error);
+        throw error;
+      })
+      .finally(() => {
+        if (this.contextUsageListInFlight.get(inFlightKey) === request) {
+          this.contextUsageListInFlight.delete(inFlightKey);
+        }
+      });
+    this.contextUsageListInFlight.set(inFlightKey, request);
+    return request;
   }
 
   private buildContextUsageFromSessionRow(sessionId: string, row: Record<string, unknown>): CoworkContextUsage {
@@ -1625,6 +1784,21 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   }
 
   async getContextUsage(sessionId: string): Promise<CoworkContextUsage | null> {
+    const existing = this.contextUsageInFlightBySession.get(sessionId);
+    if (existing) {
+      return existing;
+    }
+    let request: Promise<CoworkContextUsage | null>;
+    request = this.resolveContextUsage(sessionId).finally(() => {
+      if (this.contextUsageInFlightBySession.get(sessionId) === request) {
+        this.contextUsageInFlightBySession.delete(sessionId);
+      }
+    });
+    this.contextUsageInFlightBySession.set(sessionId, request);
+    return request;
+  }
+
+  private async resolveContextUsage(sessionId: string): Promise<CoworkContextUsage | null> {
     const keys = this.getSessionKeysForSession(sessionId);
     if (keys.length === 0) return null;
     const startedAt = Date.now();
@@ -1707,10 +1881,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
     const client = this.gatewayClient;
     if (!client) return undefined;
+    if (this.isGatewayRpcDegraded()) {
+      console.debug('[OpenClawRuntime] skipped context token refresh because gateway session RPCs are degraded.');
+      return undefined;
+    }
     try {
       const result = await client.request<{ sessions?: unknown[] }>('sessions.list', {
         activeMinutes: 60, limit: 50,
-      }, { timeoutMs: 5_000 });
+      }, { timeoutMs: OpenClawRuntimeAdapter.CONTEXT_USAGE_LIST_TIMEOUT_MS });
+      this.markGatewayRpcSuccess();
       const sessions = result?.sessions;
       if (Array.isArray(sessions)) {
         for (const row of sessions) {
@@ -1727,6 +1906,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       console.debug('[OpenClawRuntime] refreshSessionContextTokens:', sessionKey, resolved ? `contextTokens=${resolved}` : 'not found in sessions.list');
       return resolved;
     } catch (error) {
+      this.recordGatewayRpcFailure('sessions.list', error);
       console.debug('[OpenClawRuntime] refreshSessionContextTokens failed:', sessionKey, error);
       return undefined;
     }
@@ -2037,9 +2217,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       console.warn('[ChannelSync] pollChannelSessions: skipped — gatewayClient:', !!this.gatewayClient, 'channelSessionSync:', !!this.channelSessionSync);
       return;
     }
+    if (this.isGatewayRpcDegraded()) {
+      console.debug('[ChannelSync] skipped channel session polling because gateway session RPCs are degraded.');
+      return;
+    }
     try {
       const params = { activeMinutes: 60, limit: CHANNEL_SESSION_DISCOVERY_LIMIT };
-      const result = await this.gatewayClient.request('sessions.list', params);
+      const result = await this.gatewayClient.request('sessions.list', params, {
+        timeoutMs: OpenClawRuntimeAdapter.CONTEXT_USAGE_LIST_TIMEOUT_MS,
+      });
+      this.markGatewayRpcSuccess();
       const sessions = (result as Record<string, unknown>)?.sessions;
       if (!Array.isArray(sessions)) {
         console.warn('[ChannelSync] pollChannelSessions: sessions.list returned non-array sessions:', typeof sessions, 'full result keys:', Object.keys(result as Record<string, unknown>));
@@ -2127,6 +2314,11 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         }
       }
     } catch (error) {
+      this.recordGatewayRpcFailure('sessions.list', error);
+      if (this.isGatewayRequestTimeout(error, 'sessions.list')) {
+        console.warn('[ChannelSync] channel session polling timed out; polling will back off temporarily:', error);
+        return;
+      }
       console.error('[ChannelSync] pollChannelSessions: error during polling:', error);
     }
   }
@@ -2202,15 +2394,30 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const sendPatch = async (): Promise<void> => {
       const client = this.requireGatewayClient();
-      await client.request('sessions.patch', {
-        key: targetSessionKey,
-        ...normalizedPatch,
-      });
+      try {
+        await client.request('sessions.patch', {
+          key: targetSessionKey,
+          ...normalizedPatch,
+        }, { timeoutMs: OpenClawRuntimeAdapter.SESSION_PATCH_TIMEOUT_MS });
+        this.markGatewayRpcSuccess();
+      } catch (error) {
+        this.recordGatewayRpcFailure('sessions.patch', error);
+        throw error;
+      }
     };
 
     if (normalizedPatch.model !== undefined) {
       await this.enqueueSessionModelPatch(sessionId, sendPatch);
-      this.lastPatchedModelBySession.delete(sessionId);
+      if (typeof normalizedPatch.model === 'string' && normalizedPatch.model) {
+        this.rememberSessionModelPatch(
+          sessionId,
+          targetSessionKey,
+          normalizedPatch.model,
+          SessionModelPatchSource.SessionOverride,
+        );
+      } else {
+        this.sessionModelPatchStateBySession.delete(sessionId);
+      }
       return;
     }
 
@@ -2333,22 +2540,30 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     sessionId: string;
     sessionKey: string;
     model: string;
-    source: 'sessionOverride' | 'agentModel';
+    source: SessionModelPatchSource;
   }): Promise<void> {
     const { sessionId, sessionKey, model, source } = options;
     if (!model) {
-      this.lastPatchedModelBySession.delete(sessionId);
+      this.sessionModelPatchStateBySession.delete(sessionId);
       return;
     }
 
-    const mustPatchBeforeTurn = source === 'sessionOverride';
-    if (!mustPatchBeforeTurn && model === this.lastPatchedModelBySession.get(sessionId)) {
+    const confirmedState = this.getConfirmedSessionModelPatch(sessionId, sessionKey, model, source);
+    if (source === SessionModelPatchSource.AgentModel && confirmedState) {
+      return;
+    }
+    if (confirmedState && this.isGatewayRpcDegraded()) {
+      console.warn(`[OpenClawRuntime] skipped redundant session model patch for session ${sessionId} because gateway session RPCs are degraded.`);
       return;
     }
 
     try {
       await this.enqueueSessionModelPatch(sessionId, async () => {
-        if (!mustPatchBeforeTurn && model === this.lastPatchedModelBySession.get(sessionId)) {
+        const currentConfirmedState = this.getConfirmedSessionModelPatch(sessionId, sessionKey, model, source);
+        if (source === SessionModelPatchSource.AgentModel && currentConfirmedState) {
+          return;
+        }
+        if (currentConfirmedState && this.isGatewayRpcDegraded()) {
           return;
         }
 
@@ -2360,12 +2575,22 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
           `model=${model}`,
           `source=${source}`,
         );
-        await client.request('sessions.patch', { key: sessionKey, model });
-        this.lastPatchedModelBySession.set(sessionId, model);
+        await client.request('sessions.patch', { key: sessionKey, model }, {
+          timeoutMs: OpenClawRuntimeAdapter.SESSION_PATCH_TIMEOUT_MS,
+        });
+        this.markGatewayRpcSuccess();
+        this.rememberSessionModelPatch(sessionId, sessionKey, model, source);
       });
     } catch (error) {
+      this.recordGatewayRpcFailure('sessions.patch', error);
       console.warn('[OpenClawRuntime] failed to patch the session model before chat.send:', error);
-      if (mustPatchBeforeTurn) {
+      const confirmedAfterFailure = this.getConfirmedSessionModelPatch(sessionId, sessionKey, model, source);
+      if (confirmedAfterFailure && this.isGatewayRequestTimeout(error, 'sessions.patch')) {
+        console.warn(`[OpenClawRuntime] continuing chat.send for session ${sessionId} after a redundant session model patch timed out.`);
+        return;
+      }
+      this.sessionModelPatchStateBySession.delete(sessionId);
+      if (source === SessionModelPatchSource.SessionOverride) {
         throw error;
       }
     }
@@ -2447,7 +2672,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         sessionId,
         sessionKey,
         model: currentModel,
-        source: session.modelOverride ? 'sessionOverride' : 'agentModel',
+        source: session.modelOverride
+          ? SessionModelPatchSource.SessionOverride
+          : SessionModelPatchSource.AgentModel,
       });
     } catch (error) {
       this.store.updateSession(sessionId, { status: 'error' });
@@ -2788,6 +3015,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         this.gatewayClient = client;
         this.gatewayClientVersion = connection.version;
         this.gatewayClientEntryPath = connection.clientEntryPath;
+        this.resetGatewayRpcHealth();
         settleResolve();
         this.lastTickTimestamp = Date.now();
         this.startTickWatchdog();
@@ -2875,6 +3103,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.gatewayClientEntryPath = null;
     this.gatewayReadyPromise = null;
     this.channelSessionSync?.clearCache();
+    this.sessionModelPatchStateBySession.clear();
+    this.contextUsageInFlightBySession.clear();
+    this.contextUsageListInFlight.clear();
+    this.resetGatewayRpcHealth();
     this.knownChannelSessionIds.clear();
     this.heartbeatSessionKeys.clear();
     this.stoppedSessions.clear();
@@ -3935,7 +4167,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       // event may not arrive reliably — similar to the phase=end / chat final gap.
       // Wait for the gateway chat error or retry/compaction path to settle first;
       // if the turn is still active after that, surface the error ourselves.
-      const errorMessage = typeof data.error === 'string' ? data.error.trim() : 'OpenClaw run failed';
+      const rawErrorMessage = typeof data.error === 'string' ? data.error.trim() : 'OpenClaw run failed';
+      const errorMessage = normalizeOpenClawRuntimeErrorMessage(rawErrorMessage);
       const errorTurn = this.activeTurns.get(sessionId);
       const errorRunId = eventRunId
         ?? errorTurn?.runId
@@ -5145,7 +5378,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const stoppedByError = stopReason === GatewayStopReason.Error;
     if (stoppedByError) {
-      const errorMessage = payload.errorMessage?.trim() || errorMessageFromMessage?.trim() || 'OpenClaw run failed';
+      const rawErrorMessage = payload.errorMessage?.trim() || errorMessageFromMessage?.trim() || 'OpenClaw run failed';
+      const errorMessage = normalizeOpenClawRuntimeErrorMessage(rawErrorMessage);
       const erroredSessionKey = turn.sessionKey;
       this.store.updateSession(sessionId, { status: 'error' });
       this.emit('error', sessionId, errorMessage);
@@ -5553,7 +5787,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
   private handleChatError(sessionId: string, turn: ActiveTurn, payload: ChatEventPayload): void {
     console.log('[OpenClawRuntime] handleChatError payload:', JSON.stringify(payload).slice(0, 1000));
-    let errorMessage = payload.errorMessage?.trim() || 'OpenClaw run failed';
+    const rawErrorMessage = payload.errorMessage?.trim() || 'OpenClaw run failed';
+    let errorMessage = normalizeOpenClawRuntimeErrorMessage(rawErrorMessage);
 
     // Detect model API errors that are likely caused by unsupported image content
     // in tool results (e.g., Read tool returning image blocks for non-vision models).
@@ -6640,7 +6875,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.bridgedSessions.delete(sessionId);
     this.confirmationModeBySession.delete(sessionId);
     this.manuallyStoppedSessions.delete(sessionId);
-    this.lastPatchedModelBySession.delete(sessionId);
+    this.sessionModelPatchStateBySession.delete(sessionId);
+    this.contextUsageInFlightBySession.delete(sessionId);
     this.sessionModelPatchQueue.delete(sessionId);
 
     // Propagate to channel session sync

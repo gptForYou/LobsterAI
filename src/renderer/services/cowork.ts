@@ -62,8 +62,9 @@ const classifyError = (error: string): string => {
 };
 
 const CONTEXT_USAGE_REFRESH_DELAY_MS = 800;
-const FINAL_CONTEXT_USAGE_REFRESH_DELAYS_MS = [800] as const;
+const FINAL_CONTEXT_USAGE_REFRESH_DELAYS_MS = [800, 2500, 6000, 12000] as const;
 const CONTEXT_USAGE_AUTO_SUPPRESSION_MS = 5 * 60 * 1000;
+const CONTEXT_USAGE_REFRESH_BACKOFF_MS = 30_000;
 const MANUAL_CONTEXT_COMPACTION_WATCHDOG_MS = 130_000;
 
 const restoreCurrentAgentDefaultSkills = (): void => {
@@ -87,6 +88,7 @@ class CoworkService {
   private contextUsageRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private contextUsageInFlightBySessionId = new Map<string, Promise<CoworkContextUsage | null>>();
   private contextUsageAutoSuppressedUntilBySessionId = new Map<string, number>();
+  private contextUsageBackoffUntil = new Map<string, number>();
   private contextCompactionWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
 
   async init(): Promise<void> {
@@ -285,6 +287,10 @@ class CoworkService {
     delayMs = CONTEXT_USAGE_REFRESH_DELAY_MS,
     mode: CoworkContextUsageRefreshModeType = CoworkContextUsageRefreshMode.Auto,
   ): void {
+    const backoffUntil = this.contextUsageBackoffUntil.get(sessionId) ?? 0;
+    if (backoffUntil > Date.now()) {
+      return;
+    }
     const timerKey = `${sessionId}:${delayMs}:${mode}`;
     const existing = this.contextUsageRefreshTimers.get(timerKey);
     if (existing) {
@@ -295,6 +301,16 @@ class CoworkService {
       void this.refreshContextUsage(sessionId, { notifyCompaction, mode });
     }, delayMs);
     this.contextUsageRefreshTimers.set(timerKey, timer);
+  }
+
+  private clearContextUsageRefreshTimers(sessionId: string): void {
+    for (const [timerKey, timer] of this.contextUsageRefreshTimers.entries()) {
+      if (!timerKey.startsWith(`${sessionId}:`)) {
+        continue;
+      }
+      clearTimeout(timer);
+      this.contextUsageRefreshTimers.delete(timerKey);
+    }
   }
 
   private scheduleFinalContextUsageRefresh(sessionId: string, notifyCompaction: boolean): void {
@@ -337,6 +353,11 @@ class CoworkService {
     this.contextUsageAutoSuppressedUntilBySessionId.delete(sessionId);
   }
 
+  private enterContextUsageBackoff(sessionId: string): void {
+    this.contextUsageBackoffUntil.set(sessionId, Date.now() + CONTEXT_USAGE_REFRESH_BACKOFF_MS);
+    this.clearContextUsageRefreshTimers(sessionId);
+  }
+
   async refreshContextUsage(
     sessionId: string,
     options: {
@@ -347,9 +368,15 @@ class CoworkService {
     const cowork = window.electron?.cowork;
     if (!cowork?.getContextUsage) return null;
     const mode = options.mode ?? CoworkContextUsageRefreshMode.Manual;
+    const notifyCompaction = options.notifyCompaction === true;
 
     if (mode === CoworkContextUsageRefreshMode.PostRun) {
       this.clearAutomaticContextUsageSuppression(sessionId);
+    }
+
+    const backoffUntil = this.contextUsageBackoffUntil.get(sessionId) ?? 0;
+    if (mode !== CoworkContextUsageRefreshMode.Manual && backoffUntil > Date.now()) {
+      return null;
     }
 
     if (mode === CoworkContextUsageRefreshMode.Auto) {
@@ -362,36 +389,50 @@ class CoworkService {
 
     const existing = this.contextUsageInFlightBySessionId.get(sessionId);
     if (existing) {
-      return existing;
+      const usage = await existing;
+      if (usage && options.notifyCompaction === true) {
+        this.handleContextUsageUpdate(usage, true);
+      }
+      return usage;
     }
 
-    const request = (async (): Promise<CoworkContextUsage | null> => {
-      const result = await cowork.getContextUsage(sessionId);
-      if (result?.success && result.usage) {
-        this.handleContextUsageUpdate(result.usage, options.notifyCompaction === true);
-        return result.usage;
-      }
-      if (
-        result?.source === CoworkContextUsageSource.Unavailable ||
-        (result && result.success === false)
-      ) {
-        this.suppressAutomaticContextUsage(sessionId);
-      }
-      return null;
-    })();
+    let request: Promise<CoworkContextUsage | null>;
+    request = (async (): Promise<CoworkContextUsage | null> => {
+      try {
+        const result = await cowork.getContextUsage(sessionId);
+        if (result?.success && result.usage) {
+          this.contextUsageBackoffUntil.delete(sessionId);
+          this.clearAutomaticContextUsageSuppression(sessionId);
+          this.handleContextUsageUpdate(result.usage, notifyCompaction);
+          return result.usage;
+        }
 
-    this.contextUsageInFlightBySessionId.set(sessionId, request);
-    try {
-      return await request;
-    } catch (error) {
-      this.suppressAutomaticContextUsage(sessionId);
-      console.warn('[CoworkService] context usage refresh failed:', error);
-      return null;
-    } finally {
+        if (result?.source === CoworkContextUsageSource.Unavailable) {
+          if (mode === CoworkContextUsageRefreshMode.Auto) {
+            this.suppressAutomaticContextUsage(sessionId);
+          }
+          return null;
+        }
+
+        if (result && !result.success) {
+          this.suppressAutomaticContextUsage(sessionId);
+          this.enterContextUsageBackoff(sessionId);
+        }
+        return null;
+      } catch (error) {
+        this.suppressAutomaticContextUsage(sessionId);
+        console.warn('[CoworkService] context usage refresh failed:', error);
+        this.enterContextUsageBackoff(sessionId);
+        return null;
+      }
+    })().finally(() => {
       if (this.contextUsageInFlightBySessionId.get(sessionId) === request) {
         this.contextUsageInFlightBySessionId.delete(sessionId);
       }
-    }
+    });
+
+    this.contextUsageInFlightBySessionId.set(sessionId, request);
+    return request;
   }
 
   async compactContext(sessionId: string): Promise<boolean> {
@@ -490,6 +531,9 @@ class CoworkService {
     this.openClawEngineListenerAttached = false;
     this.contextUsageRefreshTimers.forEach(timer => clearTimeout(timer));
     this.contextUsageRefreshTimers.clear();
+    this.contextUsageInFlightBySessionId.clear();
+    this.contextUsageAutoSuppressedUntilBySessionId.clear();
+    this.contextUsageBackoffUntil.clear();
   }
 
   async loadSessions(agentId?: string): Promise<void> {
