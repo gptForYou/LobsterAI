@@ -1235,27 +1235,29 @@ const translations: Record<LanguageType, Record<string, string>> = {
     skillsSyncSuccess: '已成功同步技能',
     skillsSyncFailed: '同步技能失败',
 
-    // 专家套件 (Kits)
-    kits: '专家套件',
-    kitSearchPlaceholder: '搜索套件',
+    // 专家 (Kits)
+    kits: '专家',
+    kitSearchPlaceholder: '搜索专家',
     kitInstall: '安装',
     kitInstalling: '安装中...',
     kitUninstall: '卸载',
     kitUninstalling: '卸载中...',
     kitInstalled: '已安装',
     kitLoading: '加载中...',
-    kitEmpty: '暂无套件',
+    kitEmpty: '暂无专家',
     kitBack: '返回',
     kitTryAsking: '试试这样问...',
     kitSkills: '技能',
-    kitDescription: '精选专家工具包，一键解锁智能体更多能力',
-    kitMarketplace: '套件市场',
+    kitDescription: '精选专家技能包，一键解锁智能体更多能力',
+    kitMarketplace: '专家市场',
     kitSkillCount: '{count} 个技能',
     kitOfficial: '官方',
-    manageKits: '管理套件',
-    searchKits: '搜索套件',
-    clearKit: '清除套件',
-    noKitsInstalled: '暂无已安装套件',
+    manageKits: '管理专家',
+    searchKits: '搜索专家',
+    clearKit: '清除专家',
+    noKitsInstalled: '暂无已安装专家',
+    kitInstallRequired: '需要安装',
+    kitInstallRequiredDesc: '该专家尚未安装，是否立即安装并体验？',
 
     // MCP 服务
     mcpServers: 'MCP',
@@ -3535,6 +3537,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     searchKits: 'Search kits',
     clearKit: 'Clear Kit',
     noKitsInstalled: 'No kits installed',
+    kitInstallRequired: 'Installation Required',
+    kitInstallRequiredDesc: 'This kit is not installed yet. Install it now to try?',
 
     // MCP Servers
     mcpServers: 'MCP',

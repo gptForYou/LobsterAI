@@ -15,12 +15,14 @@ import {
   clearDraftAttachments,
   type DraftAttachment,
   setDraftAttachments,
+  setDraftKitIds,
   setDraftPrompt,
+  setDraftSkillIds,
   updateCurrentSessionModelOverride,
 } from '../../store/slices/coworkSlice';
-import { toggleActiveKit } from '../../store/slices/kitSlice';
+import { setActiveKitIds, toggleActiveKit } from '../../store/slices/kitSlice';
 import type { Model } from '../../store/slices/modelSlice';
-import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
+import { setActiveSkillIds, setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
 import { CoworkImageAttachment } from '../../types/cowork';
 import type { MediaAttachmentRef } from '../../types/mediaGeneration';
 import { Skill } from '../../types/skill';
@@ -328,6 +330,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   const activeKitIds = useSelector((state: RootState) => state.kit.activeKitIds);
   const installedKits = useSelector((state: RootState) => state.kit.installedKits);
   const hasActiveKits = activeKitIds.length > 0;
+  const draftKitIdsForKey = useSelector((state: RootState) => state.cowork.draftKitIds[draftKey]);
+  const draftSkillIdsForKey = useSelector((state: RootState) => state.cowork.draftSkillIds[draftKey]);
   const currentAgent = agents.find((agent) => agent.id === currentAgentId);
   const currentAgentSelectedModel = useAgentSelectedModel(currentAgentId, currentAgent?.model ?? '');
   const {
@@ -405,6 +409,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       } else if (shouldClear) {
         setValue('');
         dispatch(clearDraftAttachments(draftKey));
+        dispatch(setDraftKitIds({ draftKey, kitIds: [] }));
+        dispatch(setActiveKitIds([]));
         setImageVisionHint(false);
       }
       requestAnimationFrame(() => {
@@ -497,6 +503,23 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       setTextareaScrollTop(0);
     }
   }, [value]);
+
+  // Restore active kit/skill IDs from draft when draftKey changes
+  useEffect(() => {
+    dispatch(setActiveKitIds(draftKitIdsForKey || []));
+    dispatch(setActiveSkillIds(draftSkillIdsForKey || []));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]); // intentionally only trigger on session/draft switch
+
+  // Persist active kit IDs to draft store
+  useEffect(() => {
+    dispatch(setDraftKitIds({ draftKey, kitIds: activeKitIds }));
+  }, [activeKitIds, draftKey, dispatch]);
+
+  // Persist active skill IDs to draft store
+  useEffect(() => {
+    dispatch(setDraftSkillIds({ draftKey, skillIds: activeSkillIds }));
+  }, [activeSkillIds, draftKey, dispatch]);
 
   const mediaLabels = useMemo(() => computeMediaLabels(attachments), [attachments]);
   const mediaMentionSegments = useMemo(

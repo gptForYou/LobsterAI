@@ -13,7 +13,7 @@ import {
   selectCurrentSession,
   selectIsStreaming,
 } from '../../store/selectors/coworkSelectors';
-import { addMessage, setCurrentSession, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
+import { addMessage, setCurrentSession, setDraftKitIds, setDraftSkillIds, setStreaming, updateSessionStatus } from '../../store/slices/coworkSlice';
 import { clearActiveKits } from '../../store/slices/kitSlice';
 import { clearSelection,selectAction, setActions } from '../../store/slices/quickActionSlice';
 import { clearActiveSkills, setActiveSkillIds } from '../../store/slices/skillSlice';
@@ -300,6 +300,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       // so they don't persist to next session
       dispatch(clearActiveSkills());
       dispatch(clearActiveKits());
+      dispatch(setDraftKitIds({ draftKey: '__home__', kitIds: [] }));
+      dispatch(setDraftSkillIds({ draftKey: '__home__', skillIds: [] }));
       dispatch(clearSelection());
 
       // Combine skill prompt with system prompt.
@@ -397,6 +399,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       if (sent && (sessionSkillIds.length > 0 || sessionKitIds.length > 0)) {
         dispatch(clearActiveSkills());
         dispatch(clearActiveKits());
+        dispatch(setDraftKitIds({ draftKey: currentSession.id, kitIds: [] }));
+        dispatch(setDraftSkillIds({ draftKey: currentSession.id, skillIds: [] }));
       }
       return sent;
     } finally {

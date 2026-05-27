@@ -29,6 +29,10 @@ interface CoworkState {
   draftPrompts: Record<string, string>;
   /** Keyed by draftKey (sessionId or '__home__'), stores pending attachments */
   draftAttachments: Record<string, DraftAttachment[]>;
+  /** Keyed by draftKey, stores active kit IDs per draft so they survive view switches */
+  draftKitIds: Record<string, string[]>;
+  /** Keyed by draftKey, stores active skill IDs per draft so they survive view switches */
+  draftSkillIds: Record<string, string[]>;
   unreadSessionIds: string[];
   isCoworkActive: boolean;
   isStreaming: boolean;
@@ -53,6 +57,8 @@ const initialState: CoworkState = {
   currentSession: null,
   draftPrompts: {},
   draftAttachments: {},
+  draftKitIds: {},
+  draftSkillIds: {},
   unreadSessionIds: [],
   isCoworkActive: false,
   isStreaming: false,
@@ -595,6 +601,24 @@ const coworkSlice = createSlice({
       delete state.draftAttachments[action.payload];
     },
 
+    setDraftKitIds(state, action: PayloadAction<{ draftKey: string; kitIds: string[] }>) {
+      const { draftKey, kitIds } = action.payload;
+      if (kitIds.length === 0) {
+        delete state.draftKitIds[draftKey];
+      } else {
+        state.draftKitIds[draftKey] = kitIds;
+      }
+    },
+
+    setDraftSkillIds(state, action: PayloadAction<{ draftKey: string; skillIds: string[] }>) {
+      const { draftKey, skillIds } = action.payload;
+      if (skillIds.length === 0) {
+        delete state.draftSkillIds[draftKey];
+      } else {
+        state.draftSkillIds[draftKey] = skillIds;
+      }
+    },
+
     setMediaModels(state, action: PayloadAction<{ image: MediaModel[]; video: MediaModel[] }>) {
       state.mediaModels = action.payload;
     },
@@ -644,6 +668,8 @@ export const {
   setConfig,
   updateConfig,
   clearCurrentSession,
+  setDraftKitIds,
+  setDraftSkillIds,
   setMediaModels,
   setMediaSelection,
 } = coworkSlice.actions;

@@ -5,10 +5,10 @@ import { i18nService } from '../../services/i18n';
 import { kitService } from '../../services/kit';
 import { resolveLocalizedText } from '../../services/skill';
 import type { InstalledKit, MarketplaceKit } from '../../types/kit';
+import Modal from '../common/Modal';
 import SearchIcon from '../icons/SearchIcon';
 import SidebarKitsIcon from '../icons/SidebarKitsIcon';
 
-type KitTab = 'installed' | 'marketplace';
 
 interface KitsManagerProps {
   onTryAsking?: (text: string, kitId: string) => void;
@@ -22,7 +22,7 @@ const KitsManager: React.FC<KitsManagerProps> = ({ onTryAsking }) => {
   const [selectedKit, setSelectedKit] = useState<MarketplaceKit | null>(null);
   const [operatingKitId, setOperatingKitId] = useState<string | null>(null);
   const [operationType, setOperationType] = useState<'install' | 'uninstall' | null>(null);
-  const [activeTab, setActiveTab] = useState<KitTab>('marketplace');
+  const [installPrompt, setInstallPrompt] = useState<{ kitId: string; text: string } | null>(null);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -41,10 +41,6 @@ const KitsManager: React.FC<KitsManagerProps> = ({ onTryAsking }) => {
 
   const filteredKits = useMemo(() => {
     let results = kits;
-    // Tab filtering
-    if (activeTab === 'installed') {
-      results = results.filter((kit) => !!installedKits[kit.id]);
-    }
     // Search filtering
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -55,9 +51,7 @@ const KitsManager: React.FC<KitsManagerProps> = ({ onTryAsking }) => {
       });
     }
     return results;
-  }, [kits, searchQuery, activeTab, installedKits]);
-
-  const installedCount = useMemo(() => Object.keys(installedKits).length, [installedKits]);
+  }, [kits, searchQuery]);
 
   const handleInstall = async (kit: MarketplaceKit) => {
     setOperatingKitId(kit.id);
@@ -95,6 +89,26 @@ const KitsManager: React.FC<KitsManagerProps> = ({ onTryAsking }) => {
 
   const isKitInstalled = (kitId: string) => !!installedKits[kitId];
   const isOperating = (kitId: string) => operatingKitId === kitId;
+
+  const handleTryAskingClick = (text: string, kitId: string) => {
+    if (isKitInstalled(kitId)) {
+      onTryAsking?.(text, kitId);
+    } else {
+      setInstallPrompt({ kitId, text });
+    }
+  };
+
+  const handleInstallAndTry = async () => {
+    if (!installPrompt || !selectedKit) return;
+    const { kitId, text } = installPrompt;
+    setInstallPrompt(null);
+    await handleInstall(selectedKit);
+    // After install, check if it succeeded and navigate
+    const installed = await kitService.getInstalledKits();
+    if (installed[kitId]) {
+      onTryAsking?.(text, kitId);
+    }
+  };
 
   // Detail view
   if (selectedKit) {
@@ -163,7 +177,7 @@ const KitsManager: React.FC<KitsManagerProps> = ({ onTryAsking }) => {
                 <div
                   key={idx}
                   className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-border bg-surface hover:border-primary/50 transition-colors cursor-pointer"
-                  onClick={() => onTryAsking?.(resolveLocalizedText(prompt), selectedKit.id)}
+                  onClick={() => handleTryAskingClick(resolveLocalizedText(prompt), selectedKit.id)}
                 >
                   <span className="text-sm text-foreground">{resolveLocalizedText(prompt)}</span>
                   <ArrowLeftIcon className="h-3.5 w-3.5 text-secondary rotate-180 flex-shrink-0" />
@@ -185,11 +199,45 @@ const KitsManager: React.FC<KitsManagerProps> = ({ onTryAsking }) => {
                   key={skill.id}
                   className="inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-lg bg-surface-raised text-secondary border border-border"
                 >
-                  {skill.name}
+                  {skill.name.replace(/^\//, '')}
                 </span>
               ))}
             </div>
           </div>
+        )}
+
+        {/* Install confirmation dialog */}
+        {installPrompt && (
+          <Modal
+            onClose={() => setInstallPrompt(null)}
+            overlayClassName="fixed inset-0 z-[9999] flex items-center justify-center modal-backdrop px-4"
+            className="modal-content w-full max-w-sm rounded-2xl border border-border bg-surface shadow-modal overflow-hidden"
+          >
+            <div className="px-5 py-4">
+              <h2 className="text-base font-semibold text-foreground">
+                {i18nService.t('kitInstallRequired')}
+              </h2>
+              <p className="mt-1.5 text-sm leading-5 text-secondary">
+                {i18nService.t('kitInstallRequiredDesc')}
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setInstallPrompt(null)}
+                className="px-4 py-2 text-sm font-medium rounded-lg text-secondary hover:bg-surface-raised transition-colors"
+              >
+                {i18nService.t('cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={handleInstallAndTry}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary-hover transition-colors"
+              >
+                {i18nService.t('kitInstall')}
+              </button>
+            </div>
+          </Modal>
         )}
       </div>
     );
@@ -226,40 +274,14 @@ const KitsManager: React.FC<KitsManagerProps> = ({ onTryAsking }) => {
         )}
       </div>
 
-      {/* Tabs */}
+      {/* Tab bar */}
       <div className="flex items-center border-b border-border">
         <button
           type="button"
-          onClick={() => setActiveTab('installed')}
-          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-            activeTab === 'installed'
-              ? 'text-foreground'
-              : 'text-secondary hover:text-foreground'
-          }`}
-        >
-          {i18nService.t('kitInstalled')}
-          {installedCount > 0 && (
-            <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-surface-raised">
-              {installedCount}
-            </span>
-          )}
-          <div className={`absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-colors ${
-            activeTab === 'installed' ? 'bg-primary' : 'bg-transparent'
-          }`} />
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('marketplace')}
-          className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-            activeTab === 'marketplace'
-              ? 'text-foreground'
-              : 'text-secondary hover:text-foreground'
-          }`}
+          className="px-4 py-2 text-sm font-medium text-foreground transition-colors relative"
         >
           {i18nService.t('kitMarketplace')}
-          <div className={`absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-colors ${
-            activeTab === 'marketplace' ? 'bg-primary' : 'bg-transparent'
-          }`} />
+          <div className="absolute bottom-0 left-0 right-0 h-0.5 rounded-full bg-primary" />
         </button>
       </div>
 

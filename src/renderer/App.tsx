@@ -41,7 +41,7 @@ import {
   selectCurrentSessionId,
   selectFirstPendingPermission,
 } from './store/selectors/coworkSelectors';
-import { setDraftPrompt } from './store/slices/coworkSlice';
+import { setDraftKitIds, setDraftPrompt } from './store/slices/coworkSlice';
 import { setActiveKitIds } from './store/slices/kitSlice';
 import { setAvailableModels, setDefaultSelectedModel } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
@@ -322,6 +322,10 @@ const App: React.FC = () => {
     dispatch(setActiveKitIds([kitId]));
     coworkService.clearSession({ restoreAgentSkills: true });
     dispatch(clearSelection());
+    // Set the draft prompt and kit selection in store BEFORE switching view, so that when
+    // CoworkPromptInput mounts/updates with draftKey='__home__', it picks up both.
+    dispatch(setDraftPrompt({ sessionId: '__home__', draft: text }));
+    dispatch(setDraftKitIds({ draftKey: '__home__', kitIds: [kitId] }));
     setMainView('cowork');
     window.setTimeout(() => {
       window.dispatchEvent(new CustomEvent('cowork:focus-input', {
