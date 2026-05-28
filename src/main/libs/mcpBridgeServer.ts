@@ -26,6 +26,8 @@ export type AskUserRequest = {
   questions: Array<{
     question: string;
     header?: string;
+    title?: string;
+    subtitle?: string;
     options: Array<{ label: string; description?: string }>;
     multiSelect?: boolean;
   }>;

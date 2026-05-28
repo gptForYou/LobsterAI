@@ -3316,13 +3316,22 @@ if (!gotTheLock) {
       // Video generation confirmation: inform user about cost and duration
       if (mediaType === 'video' && mcpBridgeServer) {
         const durationSec = typeof args.durationSeconds === 'number' ? args.durationSeconds : null;
-        const costLine = durationSec
-          ? `本次预计大约消耗 ${durationSec * 100} 积分。`
-          : '费用约为 100积分/秒。';
+        const costPoints = durationSec ? durationSec * 100 : null;
         const portalTasksUrl = getPortalTasksUrl();
-        const questionText = `视频生成任务耗时较长，${costLine}\n\n生成后的结果请及时下载保存！\n可在当前对话或「[个人主页-用量详情-生成任务](${portalTasksUrl})」查看。\n\n确认开始生成？`;
+        const subtitle = costPoints
+          ? `本次生成大约预计消耗 **${costPoints}** 积分`
+          : '费用约为 **100** 积分/秒';
+        const questionText = [
+          '请确认当前描述无误，提交后将无法取消。',
+          '视频生成任务耗时较长，请耐心等待。',
+          '',
+          `生成后请妥善保存视频，若误删可在[「个人主页-用量详情-生成任务」](${portalTasksUrl})中下载`,
+          '~~（链接有时效性，请尽快下载）~~',
+        ].join('\n');
         const confirmResponse = await mcpBridgeServer.askUserInternal([{
           question: questionText,
+          title: '确认生成视频？',
+          subtitle,
           options: [
             { label: '确认生成', description: '开始视频生成任务' },
             { label: '取消', description: '暂不生成' },
