@@ -486,6 +486,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     imageLimitReached: '最多上传 10 张图片',
     imageReadError: '读取图片失败',
     imageInputNotSupported: '当前模型不支持图像输入',
+    localFileNotFound: '文件不存在，可能已被移动或删除',
+    localFilePermissionDenied: '没有权限打开该文件',
 
     // 模型选择
     selectModel: '选择模型',
@@ -2739,6 +2741,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     imageLimitReached: 'Up to 10 images',
     imageReadError: 'Failed to read image',
     imageInputNotSupported: 'Current model does not support images',
+    localFileNotFound: 'The file does not exist. It may have been moved or deleted.',
+    localFilePermissionDenied: 'You do not have permission to open this file.',
 
     // Model Selection
     selectModel: 'Select Model',

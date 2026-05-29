@@ -32,6 +32,7 @@ import {
   ArtifactTypeValue,
   PREVIEWABLE_ARTIFACT_TYPES,
 } from '@/types/artifact';
+import { openLocalPathWithToast, revealLocalPathWithToast } from '@/utils/localFileActions';
 
 import CopyIcon from '../icons/CopyIcon';
 import ArtifactRenderer from './ArtifactRenderer';
@@ -585,7 +586,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
 
   const handleRevealInFolder = useCallback(() => {
     if (!selectedArtifact?.filePath) return;
-    window.electron?.shell?.showItemInFolder(selectedArtifact.filePath);
+    void revealLocalPathWithToast(selectedArtifact.filePath);
   }, [selectedArtifact]);
 
   const handleOpenInBrowser = useCallback(() => {
@@ -606,7 +607,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
     // non-ASCII characters (e.g. Chinese) — ERROR_FILE_NOT_FOUND (0x2).
     // Use shell.openPath which handles native Unicode paths correctly.
     if (selectedArtifact.filePath) {
-      window.electron?.shell?.openPath(selectedArtifact.filePath);
+      void openLocalPathWithToast(selectedArtifact.filePath);
       return;
     }
 
@@ -870,7 +871,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
       if (/^\/[A-Za-z]:/.test(filePath)) {
         filePath = filePath.slice(1);
       }
-      window.electron?.shell?.openPath(filePath);
+      void openLocalPathWithToast(filePath);
     }
   }, [selectedArtifact]);
 

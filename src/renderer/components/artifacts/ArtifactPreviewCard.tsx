@@ -7,6 +7,7 @@ import { useDispatch } from 'react-redux';
 import { i18nService } from '@/services/i18n';
 import { openArtifactPreviewTab } from '@/store/slices/artifactSlice';
 import { type Artifact, type ArtifactType, ArtifactTypeValue } from '@/types/artifact';
+import { revealLocalPathWithToast, showShellFailureToast } from '@/utils/localFileActions';
 
 const t = (key: string) => i18nService.t(key);
 
@@ -204,21 +205,35 @@ const OpenDropdown: React.FC<OpenDropdownProps> = ({ anchorRef, filePath, onClos
     };
   }, [anchorRef, onClose]);
 
-  const handleOpenWithSpecificApp = useCallback((appPath: string) => {
+  const handleOpenWithSpecificApp = useCallback(async (appPath: string) => {
     const normalized = normalizeFilePath(filePath);
-    window.electron?.shell?.openPathWithApp(normalized, appPath);
+    try {
+      const result = await window.electron?.shell?.openPathWithApp(normalized, appPath);
+      if (!result?.success) {
+        showShellFailureToast(result, 'openFileFailed');
+      }
+    } catch {
+      showShellFailureToast(null, 'openFileFailed');
+    }
     onClose();
   }, [filePath, onClose]);
 
-  const handleOpenWithDefault = useCallback(() => {
+  const handleOpenWithDefault = useCallback(async () => {
     const normalized = normalizeFilePath(filePath);
-    window.electron?.shell?.openPath(normalized);
+    try {
+      const result = await window.electron?.shell?.openPath(normalized);
+      if (!result?.success) {
+        showShellFailureToast(result, 'openFileFailed');
+      }
+    } catch {
+      showShellFailureToast(null, 'openFileFailed');
+    }
     onClose();
   }, [filePath, onClose]);
 
-  const handleRevealInFolder = useCallback(() => {
+  const handleRevealInFolder = useCallback(async () => {
     const normalized = normalizeFilePath(filePath);
-    window.electron?.shell?.showItemInFolder(normalized);
+    await revealLocalPathWithToast(normalized);
     onClose();
   }, [filePath, onClose]);
 

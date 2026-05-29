@@ -6,6 +6,7 @@ import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminder
 import { i18nService } from '../../services/i18n';
 import type { Artifact } from '../../types/artifact';
 import type { CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
+import { revealLocalPathWithToast } from '../../utils/localFileActions';
 import { ArtifactPreviewCard } from '../artifacts';
 import ExclamationTriangleIcon from '../icons/ExclamationTriangleIcon';
 import InformationCircleIcon from '../icons/InformationCircleIcon';
@@ -115,11 +116,7 @@ const VideoArtifactPathList: React.FC<{ artifacts: Artifact[] }> = ({ artifacts 
           <span className="truncate">{getDisplayPath(artifact.filePath!)}</span>
           <button
             className="flex items-center gap-1 text-primary hover:underline flex-shrink-0"
-            onClick={() => {
-              window.electron.shell.showItemInFolder(artifact.filePath!).catch(() => {
-                // ignore
-              });
-            }}
+            onClick={() => void revealLocalPathWithToast(artifact.filePath!)}
           >
             <FolderIcon className="h-3.5 w-3.5" />
             <span>{i18nService.t('showInFolder')}</span>

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { i18nService } from '@/services/i18n';
 import type { Artifact } from '@/types/artifact';
+import { openLocalPathWithToast } from '@/utils/localFileActions';
 
 import { SheetRenderer } from './sheet/SheetRenderer';
 
@@ -1154,7 +1155,7 @@ const FileInfoFallback: React.FC<{ artifact: Artifact }> = ({ artifact }) => {
 
   const handleOpenWithApp = useCallback(() => {
     if (artifact.filePath) {
-      window.electron?.shell?.openPath(artifact.filePath);
+      void openLocalPathWithToast(artifact.filePath);
     }
   }, [artifact.filePath]);
 

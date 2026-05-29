@@ -65,6 +65,8 @@ import {
 } from '../shared/localWebServices/constants';
 import { PlatformRegistry } from '../shared/platform';
 import { ProviderName } from '../shared/providers';
+import type { ShellOpenFailureReason as ShellOpenFailureReasonType } from '../shared/shell/constants';
+import { ShellOpenFailureReason } from '../shared/shell/constants';
 import { AgentManager } from './agentManager';
 import { APP_NAME } from './appConstants';
 import { authQuotaGateStateFromQuota, AuthSubscriptionStatus, createDefaultAuthQuotaGateState, normalizeAuthQuota } from './authQuota';
@@ -996,14 +998,16 @@ const safeDecodeURIComponent = (value: string): string => {
 };
 
 const normalizeWindowsShellPath = (inputPath: string): string => {
-  if (!isWindows) return inputPath;
-
   const trimmed = inputPath.trim();
   if (!trimmed) return inputPath;
 
   let normalized = trimmed;
-  if (/^file:\/\//i.test(normalized)) {
-    normalized = safeDecodeURIComponent(normalized.replace(/^file:\/\//i, ''));
+  if (/^(?:file|localfile):\/\//i.test(normalized)) {
+    normalized = safeDecodeURIComponent(normalized.replace(/^(?:file|localfile):\/\//i, ''));
+  }
+
+  if (!isWindows) {
+    return normalized;
   }
 
   if (/^\/[A-Za-z]:/.test(normalized)) {
@@ -7725,28 +7729,83 @@ if (!gotTheLock) {
     },
   );
 
+  const getFileAccessFailureReason = (error: unknown): ShellOpenFailureReasonType => {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') {
+      return ShellOpenFailureReason.NotFound;
+    }
+    if (code === 'EACCES' || code === 'EPERM') {
+      return ShellOpenFailureReason.PermissionDenied;
+    }
+    return ShellOpenFailureReason.Unknown;
+  };
+
+  const getFailedShellPathStatus = async (
+    operation: string,
+    normalizedPath: string,
+    fallbackError: string,
+  ): Promise<{ success: false; error: string; reason: ShellOpenFailureReasonType }> => {
+    try {
+      await fs.promises.stat(normalizedPath);
+      const status = {
+        success: false,
+        error: fallbackError,
+        reason: ShellOpenFailureReason.OpenFailed,
+      } as const;
+      console.warn(`[Shell] failed to ${operation} because the system could not open the existing path:`, normalizedPath);
+      return status;
+    } catch (error) {
+      const status = {
+        success: false,
+        error: fallbackError,
+        reason: getFileAccessFailureReason(error),
+      } as const;
+      console.warn(`[Shell] failed to ${operation} because the path is not accessible:`, normalizedPath, error);
+      return status;
+    }
+  };
+
   // Shell handlers - 打开文件/文件夹
   ipcMain.handle('shell:openPath', async (_event, filePath: string) => {
     try {
       const normalizedPath = normalizeWindowsShellPath(filePath);
       const result = await shell.openPath(normalizedPath);
       if (result) {
-        // 如果返回非空字符串，表示打开失败
-        return { success: false, error: result };
+        return await getFailedShellPathStatus('open local path', normalizedPath, result);
       }
       return { success: true };
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+      const normalizedPath = normalizeWindowsShellPath(filePath);
+      return await getFailedShellPathStatus(
+        'open local path',
+        normalizedPath,
+        error instanceof Error ? error.message : 'Unknown error',
+      );
     }
   });
 
   ipcMain.handle('shell:showItemInFolder', async (_event, filePath: string) => {
     try {
       const normalizedPath = normalizeWindowsShellPath(filePath);
+      try {
+        await fs.promises.stat(normalizedPath);
+      } catch (error) {
+        console.warn('[Shell] failed to reveal local path because the path is not accessible:', normalizedPath, error);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          reason: getFileAccessFailureReason(error),
+        };
+      }
       shell.showItemInFolder(normalizedPath);
       return { success: true };
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+      console.warn('[Shell] failed to reveal local path because the system request failed:', filePath, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        reason: ShellOpenFailureReason.Unknown,
+      };
     }
   });
 
@@ -7787,12 +7846,17 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('shell:openPathWithApp', async (_event, filePath: string, appPath: string) => {
+    const normalizedPath = normalizeWindowsShellPath(filePath);
     try {
       const { openFileWithApp } = await import('./shellApps');
-      await openFileWithApp(filePath, appPath);
+      await openFileWithApp(normalizedPath, appPath);
       return { success: true };
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+      return await getFailedShellPathStatus(
+        'open local path with selected app',
+        normalizedPath,
+        error instanceof Error ? error.message : 'Unknown error',
+      );
     }
   });
 

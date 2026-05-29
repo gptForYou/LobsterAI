@@ -13,6 +13,7 @@ import type {
   ListLocalWebServicesOptions,
   LocalWebService,
 } from '../../shared/localWebServices/constants';
+import type { ShellOpenFailureReason } from '../../shared/shell/constants';
 interface ApiResponse {
   ok: boolean;
   status: number;
@@ -27,6 +28,12 @@ interface ApiStreamResponse {
   status: number;
   statusText: string;
   error?: string;
+}
+
+interface ShellActionResponse {
+  success: boolean;
+  error?: string;
+  reason?: ShellOpenFailureReason;
 }
 
 // Cowork types for IPC
@@ -758,8 +765,8 @@ interface IElectronAPI {
     }) => Promise<{ response: number }>;
   };
   shell: {
-    openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
-    showItemInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+    openPath: (filePath: string) => Promise<ShellActionResponse>;
+    showItemInFolder: (filePath: string) => Promise<ShellActionResponse>;
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
     openHtmlInBrowser: (htmlContent: string) => Promise<{ success: boolean; error?: string }>;
     getAppsForFile: (
@@ -772,7 +779,7 @@ interface IElectronAPI {
     openPathWithApp: (
       filePath: string,
       appPath: string,
-    ) => Promise<{ success: boolean; error?: string }>;
+    ) => Promise<ShellActionResponse>;
   };
   clipboard: {
     writeImageFromFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;

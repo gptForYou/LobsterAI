@@ -12,6 +12,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
 import { i18nService } from '../services/i18n';
+import { type ShellActionResult, showShellFailureToast, showToast } from '../utils/localFileActions';
 import CodeBlock from './CodeBlock';
 
 const SAFE_URL_PROTOCOLS = new Set(['http', 'https', 'mailto', 'tel', 'file', 'localfile']);
@@ -170,10 +171,6 @@ const openExternalViaAnchorFallback = (url: string): void => {
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
-};
-
-const dispatchAppToast = (message: string): void => {
-  window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
 };
 
 const safeDecodeURIComponent = (value: string): string => {
@@ -481,12 +478,15 @@ const createMarkdownComponents = (
             const fallbackResult = await window.electron.shell.openPath(fallbackPath);
             if (!fallbackResult?.success) {
               console.error('Failed to open file (fallback):', fallbackPath, fallbackResult?.error);
+              showShellFailureToast(fallbackResult, 'openFileFailed');
             }
           } else {
             console.error('Failed to open file:', filePath, result?.error);
+            showShellFailureToast(result, 'openFileFailed');
           }
         } catch (error) {
           console.error('Failed to open file:', filePath, error);
+          showToast(i18nService.t('openFileFailed'));
         }
       };
 
@@ -495,9 +495,11 @@ const createMarkdownComponents = (
         e.stopPropagation();
         const anchor = e.currentTarget.parentElement?.querySelector('a');
         const linkedAnchor = anchor instanceof HTMLAnchorElement ? anchor : null;
+        let lastResult: ShellActionResult | null = null;
 
         const tryReveal = async (targetPath: string): Promise<boolean> => {
           const result = await window.electron.shell.showItemInFolder(targetPath);
+          lastResult = result ?? null;
           if (result?.success) {
             return true;
           }
@@ -519,10 +521,10 @@ const createMarkdownComponents = (
             return;
           }
 
-          dispatchAppToast(i18nService.t('showInFolderFailed'));
+          showShellFailureToast(lastResult, 'showInFolderFailed');
         } catch (error) {
           console.error('Failed to show item in folder:', filePath, error);
-          dispatchAppToast(i18nService.t('showInFolderFailed'));
+          showToast(i18nService.t('showInFolderFailed'));
         }
       };
 
