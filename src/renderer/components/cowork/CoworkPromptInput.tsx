@@ -33,11 +33,13 @@ import AgentAvatarIcon from '../agent/AgentAvatarIcon';
 import type { BrowserAnnotationPayload } from '../artifacts';
 import DefaultAgentIcon from '../icons/DefaultAgentIcon';
 import PaperClipIcon from '../icons/PaperClipIcon';
+import PromptAddIcon from '../icons/PromptAddIcon';
+import SkillIcon from '../icons/SkillIcon';
 import TaskPauseIcon from '../icons/TaskPauseIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import { ActiveKitBadge, KitsButton } from '../kits';
 import ModelSelector from '../ModelSelector';
-import { ActiveSkillBadge, SkillsButton } from '../skills';
+import { ActiveSkillBadge, SkillsPopover } from '../skills';
 import { resolveAgentModelSelection, resolveEffectiveModel, useAgentSelectedModel } from './agentModelSelection';
 import AttachmentCard from './AttachmentCard';
 import FolderSelectorPopover from './FolderSelectorPopover';
@@ -52,6 +54,7 @@ import {
   resolveMediaMentionTrigger,
 } from './mediaMentionUtils';
 import MediaModelPicker from './MediaModelPicker';
+import { buildSelectedSkillRoutingPrompt } from './selectedSkillRoutingPrompt';
 import { usePersistAgentModelSelection } from './usePersistAgentModelSelection';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
@@ -81,28 +84,6 @@ const extractBase64FromDataUrl = (dataUrl: string): { mimeType: string; base64Da
 const getFileNameFromPath = (path: string): string => {
   const parts = path.split(/[/\\]/);
   return parts[parts.length - 1] || path;
-};
-
-const getSkillDirectoryFromPath = (skillPath: string): string => {
-  const normalized = skillPath.trim().replace(/\\/g, '/');
-  return normalized.replace(/\/SKILL\.md$/i, '') || normalized;
-};
-
-const buildInlinedSkillPrompt = (skill: Skill): string => {
-  const skillDirectory = getSkillDirectoryFromPath(skill.skillPath);
-  return [
-    `## Skill: ${skill.name}`,
-    '<skill_context>',
-    `  <location>${skill.skillPath}</location>`,
-    `  <directory>${skillDirectory}</directory>`,
-    '  <path_rules>',
-    '    Resolve relative file references from this skill against <directory>.',
-    '    Do not assume skills are under the current workspace directory.',
-    '  </path_rules>',
-    '</skill_context>',
-    '',
-    skill.prompt,
-  ].join('\n');
 };
 
 const SEND_SHORTCUT_OPTIONS = [
@@ -240,8 +221,12 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const [mentionCursorPos, setMentionCursorPos] = useState(0);
     const [mentionPickerPosition, setMentionPickerPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
     const [textareaScrollTop, setTextareaScrollTop] = useState(0);
+    const [showAddMenu, setShowAddMenu] = useState(false);
+    const [showSkillsPopover, setShowSkillsPopover] = useState(false);
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const addMenuButtonRef = useRef<HTMLButtonElement>(null);
+    const addMenuRef = useRef<HTMLDivElement>(null);
     const folderButtonRef = useRef<HTMLButtonElement>(null);
     const agentButtonRef = useRef<HTMLButtonElement>(null);
     const agentMenuRef = useRef<HTMLDivElement>(null);
@@ -476,6 +461,30 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [showAgentMenu]);
 
   useEffect(() => {
+    if (!showAddMenu) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!addMenuButtonRef.current?.contains(target) && !addMenuRef.current?.contains(target)) {
+        setShowAddMenu(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowAddMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside, true);
+    document.addEventListener('keydown', handleEscape, true);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside, true);
+      document.removeEventListener('keydown', handleEscape, true);
+    };
+  }, [showAddMenu]);
+
+  useEffect(() => {
     modelPatchRequestIdRef.current += 1;
     setIsPatchingModel(false);
   }, [sessionId]);
@@ -592,15 +601,14 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     if ((!trimmedValue && attachments.length === 0) || disabled || isPatchingModel) return;
     setShowFolderRequiredWarning(false);
 
-    // Get active skills prompts and combine them (including skills from active kits)
+    // Get selected skill routing metadata, including skills from active kits.
+    // OpenClaw loads SKILL.md files natively; do not inline full skill bodies here.
     const kitSkillIds = activeKitIds.flatMap(kitId => installedKits[kitId]?.skillIds ?? []);
     const allSkillIds = [...new Set([...activeSkillIds, ...kitSkillIds])];
     const activeSkills = allSkillIds
       .map(id => skills.find(s => s.id === id))
       .filter((s): s is Skill => s !== undefined);
-    const skillPrompt = activeSkills.length > 0
-      ? activeSkills.map(buildInlinedSkillPrompt).join('\n\n')
-      : undefined;
+    const skillPrompt = buildSelectedSkillRoutingPrompt(activeSkills);
 
     // Extract image attachments (with base64 data) for vision-capable models
     console.log('[CoworkPromptInput] handleSubmit: attachment diagnosis', {
@@ -1019,6 +1027,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const handleAddFile = useCallback(async () => {
     if (isAddingFile || disabled || isStreaming) return;
+    setShowAddMenu(false);
     setIsAddingFile(true);
     try {
       const result = await window.electron.dialog.selectFiles({
@@ -1060,6 +1069,16 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       setIsAddingFile(false);
     }
   }, [addAttachment, effectiveSelectedModel, isAddingFile, disabled, isStreaming, modelSupportsImage]);
+
+  const handleOpenAddMenu = useCallback(() => {
+    setShowSkillsPopover(false);
+    setShowAddMenu(prev => !prev);
+  }, []);
+
+  const handleOpenSkillsPopover = useCallback(() => {
+    setShowAddMenu(false);
+    setShowSkillsPopover(true);
+  }, []);
 
   const handleRemoveAttachment = useCallback((path: string) => {
     dispatch(setDraftAttachments({
@@ -1234,22 +1253,62 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     </div>
   ) : null;
 
-  const largeInputActions = !remoteManaged ? (
-    <div className="flex items-center gap-0.5">
+  const addMenuAction = !remoteManaged ? (
+    <div className="relative">
       <button
+        ref={addMenuButtonRef}
         type="button"
-        onClick={handleAddFile}
+        onClick={handleOpenAddMenu}
         className="flex h-[34px] w-[34px] items-center justify-center rounded-lg text-secondary hover:bg-surface-raised hover:text-foreground transition-colors"
-        title={i18nService.t('coworkAddFile')}
-        aria-label={i18nService.t('coworkAddFile')}
-        disabled={disabled || isStreaming || isAddingFile}
+        title={i18nService.t('add')}
+        aria-label={i18nService.t('add')}
+        aria-haspopup="menu"
+        aria-expanded={showAddMenu || showSkillsPopover}
       >
-        <PaperClipIcon className="h-5 w-5" />
+        <PromptAddIcon className="h-5 w-5" />
       </button>
-      <SkillsButton
+
+      {showAddMenu && (
+        <div
+          ref={addMenuRef}
+          className="absolute bottom-full left-0 z-50 mb-2 w-44 overflow-hidden rounded-xl border border-border bg-surface py-1 shadow-popover"
+          role="menu"
+        >
+          <button
+            type="button"
+            onClick={handleAddFile}
+            disabled={disabled || isStreaming || isAddingFile}
+            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
+            role="menuitem"
+          >
+            <PaperClipIcon className="h-5 w-5 shrink-0 text-secondary" />
+            <span className="min-w-0 truncate">{i18nService.t('coworkAddFile')}</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenSkillsPopover}
+            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-surface-raised"
+            role="menuitem"
+          >
+            <SkillIcon className="h-5 w-5 shrink-0 text-secondary" />
+            <span className="min-w-0 truncate">{i18nService.t('skills')}</span>
+          </button>
+        </div>
+      )}
+
+      <SkillsPopover
+        isOpen={showSkillsPopover}
+        onClose={() => setShowSkillsPopover(false)}
         onSelectSkill={handleSelectSkill}
         onManageSkills={handleManageSkills}
+        anchorRef={addMenuButtonRef as React.RefObject<HTMLElement>}
       />
+    </div>
+  ) : null;
+
+  const largeInputActions = !remoteManaged ? (
+    <div className="flex items-center gap-0.5">
+      {addMenuAction}
       <KitsButton
         onSelectKit={handleSelectKit}
         onManageKits={handleManageKits}

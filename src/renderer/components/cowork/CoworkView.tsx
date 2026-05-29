@@ -1,5 +1,5 @@
 import { ShieldCheckIcon } from '@heroicons/react/24/outline';
-import React, { useEffect, useRef,useState } from 'react';
+import React, { useCallback, useEffect, useRef,useState } from 'react';
 import { useDispatch,useSelector } from 'react-redux';
 
 import { buildSessionTitleFromInput } from '../../../common/sessionTitle';
@@ -98,6 +98,19 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     const key = currentSession?.id || '__home__';
     return state.cowork.mediaSelection[key];
   });
+
+  const resolveRoutableSkillIds = useCallback((skillIds: string[]): string[] => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const skillId of skillIds) {
+      if (seen.has(skillId)) continue;
+      seen.add(skillId);
+      const skill = skills.find(s => s.id === skillId);
+      if (!skill?.enabled || !skill.skillPath.trim()) continue;
+      result.push(skillId);
+    }
+    return result;
+  }, [skills]);
 
   const buildApiConfigNotice = (error?: string): { noticeI18nKey: string; noticeExtra?: string } => {
     const key = 'coworkModelSettingsRequired';
@@ -254,9 +267,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       const sessionSkillIds = [...activeSkillIds];
       const sessionKitIds = [...activeKitIds];
 
-      // Expand kit IDs into skill IDs and deduplicate
+      // Expand kit IDs into skill IDs, then keep only currently routable skills.
       const kitSkillIds = sessionKitIds.flatMap(kitId => installedKits[kitId]?.skillIds ?? []);
-      const expandedSkillIds = [...new Set([...sessionSkillIds, ...kitSkillIds])];
+      const expandedSkillIds = resolveRoutableSkillIds([...sessionSkillIds, ...kitSkillIds]);
 
       const tempSession: CoworkSession = {
         id: tempSessionId,
@@ -379,9 +392,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
       const sessionSkillIds = [...activeSkillIds];
       const sessionKitIds = [...activeKitIds];
 
-      // Expand kit IDs into skill IDs and deduplicate
+      // Expand kit IDs into skill IDs, then keep only currently routable skills.
       const kitSkillIds = sessionKitIds.flatMap(kitId => installedKits[kitId]?.skillIds ?? []);
-      const expandedSkillIds = [...new Set([...sessionSkillIds, ...kitSkillIds])];
+      const expandedSkillIds = resolveRoutableSkillIds([...sessionSkillIds, ...kitSkillIds]);
 
       // Only send a continuation system prompt when this turn selects new skills.
       // Otherwise the main process falls back to the session prompt created on the first turn.
