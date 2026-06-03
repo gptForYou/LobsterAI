@@ -17,9 +17,16 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { resolveComputerUseRuntimePaths, resolvePackageRoot } from './computerUseMcpServer';
+import {
+  ComputerUseMcpEnv,
+  ensureComputerUseMcpServerScript,
+  resolveComputerUseMcpServer,
+  resolveComputerUseRuntimePaths,
+  resolvePackageRoot,
+} from './computerUseMcpServer';
 import {
   ComputerUseRuntime,
+  getComputerUseHelperStateHome,
   getComputerUseRuntimeRoot,
   inspectComputerUseRuntime,
 } from './computerUseRuntime';
@@ -40,7 +47,11 @@ describe('resolvePackageRoot', () => {
 });
 
 describe('resolveComputerUseRuntimePaths', () => {
-  test('resolves the installed runtime from userData runtimes directory', () => {
+  function writeRuntimeFixture(): {
+    helperExePath: string;
+    rootDir: string;
+    runtimePackageRoot: string;
+  } {
     const rootDir = getComputerUseRuntimeRoot();
     const runtimePackageRoot = path.join(rootDir, 'node_modules', '@oai', 'sky');
     const helperExePath = path.join(runtimePackageRoot, 'bin', 'windows', 'lobster-computer-use.exe');
@@ -66,11 +77,49 @@ describe('resolveComputerUseRuntimePaths', () => {
     })}`);
     fs.writeFileSync(helperExePath, '');
     fs.writeFileSync(clientPath, '');
+    return { helperExePath, rootDir, runtimePackageRoot };
+  }
+
+  test('resolves the installed runtime from userData runtimes directory', () => {
+    const { helperExePath, rootDir, runtimePackageRoot } = writeRuntimeFixture();
 
     const inspection = inspectComputerUseRuntime();
     const paths = resolveComputerUseRuntimePaths();
 
     expect(inspection.missing).toEqual([]);
     expect(paths).toEqual({ helperExePath, rootDir, runtimePackageRoot });
+  });
+
+  test('configures the helper with LobsterAI branding', () => {
+    writeRuntimeFixture();
+
+    const server = resolveComputerUseMcpServer({
+      askUserCallbackUrl: 'http://127.0.0.1:1234/ask-user',
+      bridgeSecret: 'secret',
+      electronNodePath: process.execPath,
+    });
+    const helperStateHome = getComputerUseHelperStateHome();
+    const config = JSON.parse(fs.readFileSync(
+      path.join(helperStateHome, 'computer-use', 'config.json'),
+      'utf8',
+    )) as { strings?: { escToCancel?: string; usingComputer?: string } };
+
+    expect(server?.env?.[ComputerUseMcpEnv.HelperStateHome]).toBe(helperStateHome);
+    expect(config.strings?.usingComputer).toBe('LobsterAI正在使用你的电脑');
+    expect(config.strings?.escToCancel).toBe('按 Esc 取消');
+  });
+
+  test('renews the helper turn only after Escape cancellation', () => {
+    const scriptPath = ensureComputerUseMcpServerScript();
+    const script = fs.readFileSync(scriptPath, 'utf8');
+
+    expect(script).toContain('function renewHelperTurn()');
+    expect(script).toContain('function hasHelperInterruptMarker()');
+    expect(script).toContain('function ensureFreshHelperTurn()');
+    expect(script).toContain('ensureFreshHelperTurn();');
+    expect(script).toContain('function isComputerUseStoppedError(error)');
+    expect(script).toContain("error.message.includes('physical Escape key')");
+    expect(script).not.toContain('turn_id: String(Date.now())');
+    expect(script).not.toContain("client.transport?.request?.('end_turn'");
   });
 });

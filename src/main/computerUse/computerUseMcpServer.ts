@@ -6,6 +6,7 @@ import type { ResolvedMcpServer } from '../libs/openclawConfigSync';
 import { findSystemNodePath } from '../libs/resolveStdioCommand';
 import {
   type ComputerUseRuntimePaths,
+  ensureComputerUseHelperStateHome,
   inspectComputerUseRuntime,
 } from './computerUseRuntime';
 
@@ -19,6 +20,7 @@ export const ComputerUseMcpEnv = {
   AskUserUrl: 'LOBSTER_COMPUTER_USE_ASKUSER_URL',
   BridgeSecret: 'LOBSTER_MCP_BRIDGE_SECRET',
   ExePath: 'LOBSTER_COMPUTER_USE_EXE',
+  HelperStateHome: 'CODEX_HOME',
   RuntimePackageRoot: 'LOBSTER_COMPUTER_USE_RUNTIME_PACKAGE_ROOT',
   SdkRoot: 'LOBSTER_COMPUTER_USE_MCP_SDK_ROOT',
   ZodRoot: 'LOBSTER_COMPUTER_USE_ZOD_ROOT',
@@ -124,6 +126,7 @@ export function resolveComputerUseMcpServer(
     [ComputerUseMcpEnv.AskUserUrl]: options.askUserCallbackUrl,
     [ComputerUseMcpEnv.BridgeSecret]: options.bridgeSecret,
     [ComputerUseMcpEnv.ExePath]: runtimePaths.helperExePath,
+    [ComputerUseMcpEnv.HelperStateHome]: ensureComputerUseHelperStateHome(),
     [ComputerUseMcpEnv.RuntimePackageRoot]: runtimePaths.runtimePackageRoot,
     [ComputerUseMcpEnv.SdkRoot]: sdkRoot,
     [ComputerUseMcpEnv.ZodRoot]: zodRoot,
@@ -141,7 +144,8 @@ export function resolveComputerUseMcpServer(
   };
 }
 
-const COMPUTER_USE_MCP_SERVER_SCRIPT = String.raw`import path from 'node:path';
+const COMPUTER_USE_MCP_SERVER_SCRIPT = String.raw`import { existsSync } from 'node:fs';
+import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
@@ -165,6 +169,7 @@ const runtimePackageRoot = requireEnv('LOBSTER_COMPUTER_USE_RUNTIME_PACKAGE_ROOT
 const helperExePath = requireEnv('LOBSTER_COMPUTER_USE_EXE');
 const askUserUrl = requireEnv('LOBSTER_COMPUTER_USE_ASKUSER_URL');
 const bridgeSecret = requireEnv('LOBSTER_MCP_BRIDGE_SECRET');
+const helperStateHome = requireEnv('CODEX_HOME');
 
 const { McpServer } = await import(moduleUrl(sdkRoot, 'dist', 'esm', 'server', 'mcp.js'));
 const { StdioServerTransport } = await import(moduleUrl(sdkRoot, 'dist', 'esm', 'server', 'stdio.js'));
@@ -194,9 +199,13 @@ const deniedAppPattern = [
 ].join('|');
 const deniedAppRe = new RegExp(deniedAppPattern, 'i');
 const approvedApps = new Set();
+let nextTurnId = 0;
+function createHelperTurnId() {
+  return String(Date.now()) + '-' + String(++nextTurnId);
+}
 const requestMeta = {
   session_id: 'lobsterai-computer-use',
-  turn_id: String(Date.now()),
+  turn_id: createHelperTurnId(),
 };
 
 function truncateText(value, maxChars = MAX_TEXT_CHARS) {
@@ -278,6 +287,36 @@ const client = new WindowsComputerUseClient({
   timeoutMs: 30000,
 });
 
+function isComputerUseStoppedError(error) {
+  return error instanceof Error && error.message.includes('physical Escape key');
+}
+
+function renewHelperTurn() {
+  requestMeta.turn_id = createHelperTurnId();
+}
+
+function helperPathPart(value) {
+  return String(value || '').replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+function hasHelperInterruptMarker() {
+  const markerPath = path.join(
+    helperStateHome,
+    'cache',
+    'computer-use',
+    'interrupts',
+    helperPathPart(requestMeta.session_id),
+    helperPathPart(requestMeta.turn_id),
+  );
+  return existsSync(markerPath);
+}
+
+function ensureFreshHelperTurn() {
+  if (hasHelperInterruptMarker()) {
+    renewHelperTurn();
+  }
+}
+
 const server = new McpServer({
   name: 'computer-use',
   version: '0.1.0',
@@ -353,8 +392,12 @@ function stateToContent(state) {
 function registerTool(name, description, inputSchema, handler) {
   server.registerTool(name, { description, inputSchema }, async (args) => {
     try {
+      ensureFreshHelperTurn();
       return await handler(args || {});
     } catch (error) {
+      if (isComputerUseStoppedError(error)) {
+        renewHelperTurn();
+      }
       return {
         content: textContent(error instanceof Error ? error.message : String(error)),
         isError: true,

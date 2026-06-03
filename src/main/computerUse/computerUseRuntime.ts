@@ -29,6 +29,16 @@ export const ComputerUseRuntimeStatus = {
 export type ComputerUseRuntimeStatus =
   typeof ComputerUseRuntimeStatus[keyof typeof ComputerUseRuntimeStatus];
 
+export const ComputerUseHelperConfig = {
+  AccentColor: '#339cff',
+  Direction: 'ltr',
+  Locale: 'zh-CN',
+  EscToCancel: '按 Esc 取消',
+  UsingComputer: 'LobsterAI正在使用你的电脑',
+} as const;
+export type ComputerUseHelperConfig =
+  typeof ComputerUseHelperConfig[keyof typeof ComputerUseHelperConfig];
+
 export interface ComputerUseRuntimePaths {
   helperExePath: string;
   runtimePackageRoot: string;
@@ -100,6 +110,34 @@ export function getComputerUseRuntimeRoot(): string {
     RUNTIME_PLATFORM_DIR,
     ComputerUseRuntime.Version,
   );
+}
+
+export function getComputerUseHelperStateHome(): string {
+  return path.join(app.getPath('userData'), 'computer-use-helper');
+}
+
+export function ensureComputerUseHelperStateHome(): string {
+  const stateHome = getComputerUseHelperStateHome();
+  const configDir = path.join(stateHome, 'computer-use');
+  const configPath = path.join(configDir, 'config.json');
+  const config = {
+    accentColor: ComputerUseHelperConfig.AccentColor,
+    direction: ComputerUseHelperConfig.Direction,
+    locale: ComputerUseHelperConfig.Locale,
+    strings: {
+      escToCancel: ComputerUseHelperConfig.EscToCancel,
+      usingComputer: ComputerUseHelperConfig.UsingComputer,
+    },
+  };
+  const content = `${JSON.stringify(config, null, 2)}\n`;
+
+  fs.mkdirSync(configDir, { recursive: true });
+  const existing = isFile(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  if (existing !== content) {
+    fs.writeFileSync(configPath, content, 'utf8');
+  }
+
+  return stateHome;
 }
 
 function readRuntimeManifest(rootDir: string): Record<string, unknown> | null {
