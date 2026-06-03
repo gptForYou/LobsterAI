@@ -12,6 +12,7 @@ import {
   normalizeBrowserHostnamePolicyList,
   normalizeBrowserWebAccessConfig,
 } from '../../shared/browserWebAccess/constants';
+import { normalizeMcpServerUrlInput } from '../../shared/mcp/url';
 import {
   AuthType,
   OpenClawApi as OpenClawApiConst,
@@ -1025,6 +1026,16 @@ function buildOpenClawMcpServers(
   const result: Record<string, Record<string, unknown>> = {};
   for (const server of servers) {
     const entry: Record<string, unknown> = {};
+    let normalizedRemoteUrl = '';
+    if (server.transportType !== 'stdio') {
+      const normalizedUrl = normalizeMcpServerUrlInput(server.url);
+      if (!normalizedUrl.ok) {
+        console.warn(`[OpenClawConfigSync] skipped MCP server "${server.name}" because its URL is invalid`);
+        continue;
+      }
+      normalizedRemoteUrl = normalizedUrl.url;
+    }
+
     switch (server.transportType) {
       case 'stdio':
         if (server.command) entry.command = server.command;
@@ -1032,12 +1043,12 @@ function buildOpenClawMcpServers(
         if (server.env && Object.keys(server.env).length > 0) entry.env = server.env;
         break;
       case 'sse':
-        if (server.url) entry.url = server.url;
+        entry.url = normalizedRemoteUrl;
         if (server.headers && Object.keys(server.headers).length > 0)
           entry.headers = lowercaseHeaderKeys(server.headers);
         break;
       case 'http':
-        if (server.url) entry.url = server.url;
+        entry.url = normalizedRemoteUrl;
         if (server.headers && Object.keys(server.headers).length > 0)
           entry.headers = lowercaseHeaderKeys(server.headers);
         entry.transport = 'streamable-http';

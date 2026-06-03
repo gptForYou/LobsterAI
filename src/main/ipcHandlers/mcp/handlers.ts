@@ -2,6 +2,7 @@ import { app, ipcMain } from 'electron';
 import https from 'https';
 
 import { McpIpcChannel } from '../../../shared/mcp/constants';
+import { normalizeMcpServerUrlInput } from '../../../shared/mcp/url';
 import { OpenClawConfigImpact } from '../../libs/openclawConfigImpact';
 import type { McpRuntime } from '../../mcp/mcpRuntime';
 import type { McpServerFormData } from '../../mcp/mcpStore';
@@ -51,6 +52,20 @@ function syncMcpConfig(
   );
 }
 
+function normalizeMcpServerInput(data: Partial<McpServerFormData>): Partial<McpServerFormData> {
+  if (
+    (data.transportType === 'sse' || data.transportType === 'http')
+    && data.url !== undefined
+  ) {
+    const normalized = normalizeMcpServerUrlInput(data.url);
+    if (!normalized.ok) {
+      throw new Error('MCP server URL must be an absolute HTTP or HTTPS URL.');
+    }
+    return { ...data, url: normalized.url };
+  }
+  return data;
+}
+
 export function registerMcpHandlers(deps: McpHandlerDeps): void {
   const { getMcpRuntime, syncOpenClawConfig } = deps;
 
@@ -83,7 +98,8 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
     ) => {
       try {
         const mcpRuntime = getMcpRuntime();
-        const server = mcpRuntime.getStore().createServer(data as McpServerFormData);
+        const normalizedData = normalizeMcpServerInput(data as McpServerFormData) as McpServerFormData;
+        const server = mcpRuntime.getStore().createServer(normalizedData);
         if (server.enabled) {
           mcpRuntime.ensureLaunchResolution(server.id, 'mcp-server-created');
         }
@@ -117,7 +133,8 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
     ) => {
       try {
         const mcpRuntime = getMcpRuntime();
-        const server = mcpRuntime.getStore().updateServer(id, data as Partial<McpServerFormData>);
+        const normalizedData = normalizeMcpServerInput(data as Partial<McpServerFormData>);
+        const server = mcpRuntime.getStore().updateServer(id, normalizedData);
         if (server?.enabled) {
           mcpRuntime.ensureLaunchResolution(server.id, 'mcp-server-updated');
         }
