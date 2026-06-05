@@ -1,7 +1,7 @@
 import { ProviderName } from '@shared/providers';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
-import { type AppConfig, CONFIG_KEYS, defaultConfig } from '../config';
+import { type AppConfig, CONFIG_KEYS, defaultConfig, ShortcutAction } from '../config';
 
 const makeLegacyConfigWithoutMiniMaxAddedModels = (): AppConfig => ({
   ...defaultConfig,
@@ -148,6 +148,55 @@ afterEach(() => {
   vi.resetModules();
   vi.doUnmock('./store');
   delete (globalThis as { window?: unknown }).window;
+});
+
+describe('configService shortcut migrations', () => {
+  test('normalizes prior agent default shortcuts to unset', async () => {
+    const storedConfig: AppConfig = {
+      ...defaultConfig,
+      shortcuts: {
+        ...defaultConfig.shortcuts!,
+        [ShortcutAction.PreviousAgent]: 'CommandOrControl+Shift+[',
+        [ShortcutAction.NextAgent]: 'CommandOrControl+Shift+]',
+        [ShortcutAction.ShowCurrentAgentTasks]: 'CommandOrControl+Shift+H',
+        [ShortcutAction.OpenAgentTask1]: 'CommandOrControl+Shift+1',
+        [ShortcutAction.OpenAgentTask2]: 'CommandOrControl+Shift+2',
+        [ShortcutAction.OpenAgentTask3]: 'CommandOrControl+Shift+3',
+        [ShortcutAction.OpenAgentTask4]: 'CommandOrControl+Shift+4',
+        [ShortcutAction.OpenAgentTask5]: 'CommandOrControl+Shift+5',
+        [ShortcutAction.OpenAgentTask6]: 'CommandOrControl+Shift+6',
+        [ShortcutAction.OpenAgentTask7]: 'CommandOrControl+Shift+7',
+        [ShortcutAction.OpenAgentTask8]: 'CommandOrControl+Shift+8',
+        [ShortcutAction.OpenAgentTask9]: 'CommandOrControl+Shift+9',
+      },
+    };
+    const { configService, storeData } = await loadConfigServiceWithStoredConfig(storedConfig);
+
+    await configService.init();
+
+    const savedConfig = storeData[CONFIG_KEYS.APP_CONFIG] as AppConfig;
+    expect(configService.getConfig().shortcuts?.[ShortcutAction.PreviousAgent]).toBe('');
+    expect(configService.getConfig().shortcuts?.[ShortcutAction.NextAgent]).toBe('');
+    expect(configService.getConfig().shortcuts?.[ShortcutAction.ShowCurrentAgentTasks]).toBe('');
+    expect(configService.getConfig().shortcuts?.[ShortcutAction.OpenAgentTask1]).toBe('');
+    expect(configService.getConfig().shortcuts?.[ShortcutAction.OpenAgentTask9]).toBe('');
+    expect(savedConfig.shortcuts?.[ShortcutAction.PreviousAgent]).toBe('');
+  });
+
+  test('preserves customized agent shortcuts during normalization', async () => {
+    const storedConfig: AppConfig = {
+      ...defaultConfig,
+      shortcuts: {
+        ...defaultConfig.shortcuts!,
+        [ShortcutAction.PreviousAgent]: 'CommandOrControl+Alt+Left',
+      },
+    };
+    const { configService } = await loadConfigServiceWithStoredConfig(storedConfig);
+
+    await configService.init();
+
+    expect(configService.getConfig().shortcuts?.[ShortcutAction.PreviousAgent]).toBe('CommandOrControl+Alt+Left');
+  });
 });
 
 describe('configService provider migrations', () => {

@@ -4,6 +4,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import type { CoworkImageAttachmentPreview } from '../../../shared/cowork/imageAttachments';
 import type { CoworkSelectedTextSnippet } from '../../../shared/cowork/selectedText';
 import type { KitReference } from '../../../shared/kit/constants';
+import { copyTextToClipboard } from '../../services/clipboard';
 import { i18nService } from '../../services/i18n';
 import { buildKitReferences } from '../../services/kitCapability';
 import type { CoworkImageAttachment, CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
@@ -35,17 +36,16 @@ const CopyButton: React.FC<{
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(content);
+    const copiedToClipboard = await copyTextToClipboard(content);
+    if (copiedToClipboard) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
     }
   };
 
   return (
     <button
+      type="button"
       onClick={handleCopy}
       className={`p-1.5 rounded-md hover:bg-surface-raised transition-all duration-200 ${
         visible ? 'opacity-100' : 'opacity-0 pointer-events-none'

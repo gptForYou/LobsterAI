@@ -6,6 +6,7 @@ import {
   getCustomProviderDefaultName,
   getProviderDisplayName,
   isCustomProvider,
+  ShortcutAction,
 } from './config';
 
 test('isCustomProvider: custom_0 is custom', () => {
@@ -98,4 +99,19 @@ test('defaultConfig puts MiniMax M3 first with 1M context', () => {
     name: 'MiniMax M3',
     contextWindow: 1_000_000,
   });
+});
+
+test('defaultConfig leaves agent shortcuts unset', () => {
+  expect(defaultConfig.shortcuts?.[ShortcutAction.PreviousAgent]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.NextAgent]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.ShowCurrentAgentTasks]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.OpenAgentTask1]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.OpenAgentTask2]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.OpenAgentTask3]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.OpenAgentTask4]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.OpenAgentTask5]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.OpenAgentTask6]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.OpenAgentTask7]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.OpenAgentTask8]).toBe('');
+  expect(defaultConfig.shortcuts?.[ShortcutAction.OpenAgentTask9]).toBe('');
 });

@@ -55,7 +55,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkErrorInsufficientBalance: 'API 余额不足，请充值后重试。',
     coworkErrorInputTooLong: '输入内容过长，超出模型上下文限制。',
     coworkErrorMessageTooLarge:
-      '本次消息过大，请减少附件、压缩图片或拆分提交。（单次整体需小于约 30MB）',
+      '本次消息过大，请减少附件、压缩图片或拆分提交。（单次整体需小于 30MB）',
     coworkErrorCouldNotProcessPdf: '无法处理 PDF 文件。',
     coworkErrorModelNotFound: '请求的模型不存在或不可用。',
     coworkGatewaySessionSyncTimeout: 'OpenClaw 会话同步超时，消息尚未发送。请稍后重试或重启 OpenClaw Runtime。',

@@ -1,10 +1,11 @@
 import React, { useCallback, useState } from 'react';
 
+import { copyTextToClipboard } from '../../services/clipboard';
 import { i18nService } from '../../services/i18n';
 import type { CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
 import { formatMessageDateTime } from '../../utils/tokenFormat';
-import MessageForkIcon from '../icons/MessageForkIcon';
 import MessageCopyIcon from '../icons/MessageCopyIcon';
+import MessageForkIcon from '../icons/MessageForkIcon';
 import MarkdownContent from '../MarkdownContent';
 import ImagePreviewModal, { type ImagePreviewSource } from './ImagePreviewModal';
 import {
@@ -23,17 +24,16 @@ const CopyButton: React.FC<{
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(content);
+    const copiedToClipboard = await copyTextToClipboard(content);
+    if (copiedToClipboard) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
     }
   };
 
   return (
     <button
+      type="button"
       onClick={handleCopy}
       className={`p-1.5 rounded-md hover:bg-surface-raised transition-all duration-200 ${
         visible ? 'opacity-100' : 'opacity-0 pointer-events-none'

@@ -8096,6 +8096,15 @@ if (!gotTheLock) {
     }
   });
 
+  ipcMain.handle(ClipboardIpc.WriteText, async (_event, text: string) => {
+    try {
+      clipboard.writeText(text);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  });
+
   ipcMain.handle(ClipboardIpc.WriteImageFromFile, async (_event, filePath: string) => {
     try {
       const image = nativeImage.createFromPath(filePath);

@@ -153,6 +153,24 @@ const SHORTCUT_COMMAND_GROUPS: Array<{
     ],
   },
   {
+    titleKey: 'shortcutGroupNavigation',
+    commands: [
+      { key: ShortcutAction.OpenCowork, labelKey: 'shortcutOpenCowork', descriptionKey: 'shortcutDescOpenCowork' },
+      { key: ShortcutAction.OpenScheduledTasks, labelKey: 'shortcutOpenScheduledTasks', descriptionKey: 'shortcutDescOpenScheduledTasks' },
+      { key: ShortcutAction.OpenKits, labelKey: 'shortcutOpenKits', descriptionKey: 'shortcutDescOpenKits' },
+      { key: ShortcutAction.OpenSkills, labelKey: 'shortcutOpenSkills', descriptionKey: 'shortcutDescOpenSkills' },
+      { key: ShortcutAction.OpenMcp, labelKey: 'shortcutOpenMcp', descriptionKey: 'shortcutDescOpenMcp' },
+      { key: ShortcutAction.ToggleSidebar, labelKey: 'shortcutToggleSidebar', descriptionKey: 'shortcutDescToggleSidebar' },
+    ],
+  },
+  {
+    titleKey: 'shortcutGroupApp',
+    commands: [
+      { key: ShortcutAction.Settings, labelKey: 'openSettings', descriptionKey: 'shortcutDescSettings' },
+      { key: ShortcutAction.ShowShortcuts, labelKey: 'shortcutShowShortcuts', descriptionKey: 'shortcutDescShowShortcuts' },
+    ],
+  },
+  {
     titleKey: 'shortcutGroupAgent',
     commands: [
       { key: ShortcutAction.PreviousAgent, labelKey: 'shortcutPreviousAgent', descriptionKey: 'shortcutDescPreviousAgent' },
@@ -166,26 +184,8 @@ const SHORTCUT_COMMAND_GROUPS: Array<{
     ],
   },
   {
-    titleKey: 'shortcutGroupNavigation',
-    commands: [
-      { key: ShortcutAction.OpenCowork, labelKey: 'shortcutOpenCowork', descriptionKey: 'shortcutDescOpenCowork' },
-      { key: ShortcutAction.OpenScheduledTasks, labelKey: 'shortcutOpenScheduledTasks', descriptionKey: 'shortcutDescOpenScheduledTasks' },
-      { key: ShortcutAction.OpenKits, labelKey: 'shortcutOpenKits', descriptionKey: 'shortcutDescOpenKits' },
-      { key: ShortcutAction.OpenSkills, labelKey: 'shortcutOpenSkills', descriptionKey: 'shortcutDescOpenSkills' },
-      { key: ShortcutAction.OpenMcp, labelKey: 'shortcutOpenMcp', descriptionKey: 'shortcutDescOpenMcp' },
-      { key: ShortcutAction.ToggleSidebar, labelKey: 'shortcutToggleSidebar', descriptionKey: 'shortcutDescToggleSidebar' },
-    ],
-  },
-  {
     titleKey: 'shortcutGroupSettingsTabs',
     commands: SETTINGS_TAB_SHORTCUT_COMMANDS,
-  },
-  {
-    titleKey: 'shortcutGroupApp',
-    commands: [
-      { key: ShortcutAction.Settings, labelKey: 'openSettings', descriptionKey: 'shortcutDescSettings' },
-      { key: ShortcutAction.ShowShortcuts, labelKey: 'shortcutShowShortcuts', descriptionKey: 'shortcutDescShowShortcuts' },
-    ],
   },
 ];
 

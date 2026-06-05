@@ -45,11 +45,92 @@ const ModelSelectorGroup = {
   User: 'user',
 } as const;
 type ModelSelectorGroup = typeof ModelSelectorGroup[keyof typeof ModelSelectorGroup];
-const RestrictedPromptKind = {
+export const ModelAccessPromptKind = {
   Login: 'login',
   Subscribe: 'subscribe',
 } as const;
-type RestrictedPromptKind = typeof RestrictedPromptKind[keyof typeof RestrictedPromptKind];
+export type ModelAccessPromptKind = typeof ModelAccessPromptKind[keyof typeof ModelAccessPromptKind];
+
+interface ModelAccessPromptModalProps {
+  promptKind: ModelAccessPromptKind;
+  onClose: () => void;
+  titleKey?: string;
+  descriptionKey?: string;
+  primaryButtonKey?: string;
+  showLearnMore?: boolean;
+}
+
+export const ModelAccessPromptModal: React.FC<ModelAccessPromptModalProps> = ({
+  promptKind,
+  onClose,
+  titleKey,
+  descriptionKey,
+  primaryButtonKey,
+  showLearnMore = true,
+}) => {
+  const loginPrompt = promptKind === ModelAccessPromptKind.Login;
+  const resolvedTitleKey = titleKey ?? (loginPrompt ? 'modelSelectorLoginTitle' : 'modelSelectorSubscribeTitle');
+  const resolvedDescriptionKey = descriptionKey ?? (loginPrompt ? 'modelSelectorLoginDesc' : 'modelSelectorSubscribeDesc');
+  const resolvedPrimaryButtonKey = primaryButtonKey ?? (loginPrompt ? 'modelSelectorLoginBtn' : 'modelSelectorSubscribeBtn');
+
+  const openSubscriptionPage = async () => {
+    onClose();
+    const { getPortalPricingUrl } = await import('../services/endpoints');
+    await window.electron.shell.openExternal(getPortalPricingUrl());
+  };
+
+  const handlePrimary = async () => {
+    if (promptKind === ModelAccessPromptKind.Login) {
+      onClose();
+      await authService.login();
+      return;
+    }
+    await openSubscriptionPage();
+  };
+
+  return (
+    <Modal
+      onClose={onClose}
+      overlayClassName="fixed inset-0 z-[10050] flex items-center justify-center modal-backdrop px-4"
+      className="modal-content w-full max-w-sm rounded-2xl border border-border bg-surface p-5 shadow-modal"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-base font-semibold leading-6 text-foreground">
+            {i18nService.t(resolvedTitleKey)}
+          </div>
+          <div className="mt-1.5 text-sm leading-5 text-secondary">
+            {i18nService.t(resolvedDescriptionKey)}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="-mr-1 -mt-1 rounded-lg p-1 text-secondary transition-colors hover:bg-surface-raised hover:text-foreground"
+          aria-label={i18nService.t('close')}
+        >
+          <XMarkIcon className="h-5 w-5" />
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={() => { void handlePrimary(); }}
+        className="mt-5 w-full rounded-lg bg-primary px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary/90"
+      >
+        {i18nService.t(resolvedPrimaryButtonKey)}
+      </button>
+      {loginPrompt && showLearnMore && (
+        <button
+          type="button"
+          onClick={() => { void openSubscriptionPage(); }}
+          className="mt-3 w-full text-center text-sm text-secondary transition-colors hover:text-foreground"
+        >
+          {i18nService.t('modelSelectorLearnMore')}
+        </button>
+      )}
+    </Modal>
+  );
+};
 
 export function resolveHoverCardTop(
   desiredTop: number,
@@ -95,7 +176,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   const selectedItemRef = React.useRef<HTMLButtonElement>(null);
   const [hoveredModel, setHoveredModel] = React.useState<Model | null>(null);
   const [hoverCardStyle, setHoverCardStyle] = React.useState<React.CSSProperties>({});
-  const [restrictedPrompt, setRestrictedPrompt] = React.useState<RestrictedPromptKind | null>(null);
+  const [restrictedPrompt, setRestrictedPrompt] = React.useState<ModelAccessPromptKind | null>(null);
   const hoverCardRef = React.useRef<HTMLDivElement>(null);
   const hoverTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -237,7 +318,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   const handleModelSelect = (model: Model | null) => {
     if (disabled) return;
     if (model && model.accessible === false) {
-      setRestrictedPrompt(isLoggedIn ? RestrictedPromptKind.Subscribe : RestrictedPromptKind.Login);
+      setRestrictedPrompt(isLoggedIn ? ModelAccessPromptKind.Subscribe : ModelAccessPromptKind.Login);
       setHoveredModel(null);
       setIsOpen(false);
       return;
@@ -452,67 +533,13 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     </div>
   );
 
-  const openSubscriptionPage = async () => {
-    setRestrictedPrompt(null);
-    setIsOpen(false);
-    const { getPortalPricingUrl } = await import('../services/endpoints');
-    await window.electron.shell.openExternal(getPortalPricingUrl());
-  };
-
-  const handleRestrictedPromptPrimary = async () => {
-    if (restrictedPrompt === RestrictedPromptKind.Login) {
-      setRestrictedPrompt(null);
-      setIsOpen(false);
-      await authService.login();
-      return;
-    }
-    await openSubscriptionPage();
-  };
-
   const renderRestrictedPrompt = () => {
     if (!restrictedPrompt) return null;
-    const loginPrompt = restrictedPrompt === RestrictedPromptKind.Login;
     return (
-      <Modal
+      <ModelAccessPromptModal
+        promptKind={restrictedPrompt}
         onClose={() => setRestrictedPrompt(null)}
-        overlayClassName="fixed inset-0 z-[10050] flex items-center justify-center modal-backdrop px-4"
-        className="modal-content w-full max-w-sm rounded-2xl border border-border bg-surface p-5 shadow-modal"
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="text-base font-semibold leading-6 text-foreground">
-              {i18nService.t(loginPrompt ? 'modelSelectorLoginTitle' : 'modelSelectorSubscribeTitle')}
-            </div>
-            <div className="mt-1.5 text-sm leading-5 text-secondary">
-              {i18nService.t(loginPrompt ? 'modelSelectorLoginDesc' : 'modelSelectorSubscribeDesc')}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setRestrictedPrompt(null)}
-            className="-mr-1 -mt-1 rounded-lg p-1 text-secondary transition-colors hover:bg-surface-raised hover:text-foreground"
-            aria-label={i18nService.t('close')}
-          >
-            <XMarkIcon className="h-5 w-5" />
-          </button>
-        </div>
-        <button
-          type="button"
-          onClick={() => { void handleRestrictedPromptPrimary(); }}
-          className="mt-5 w-full rounded-lg bg-primary px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary/90"
-        >
-          {i18nService.t(loginPrompt ? 'modelSelectorLoginBtn' : 'modelSelectorSubscribeBtn')}
-        </button>
-        {loginPrompt && (
-          <button
-            type="button"
-            onClick={() => { void openSubscriptionPage(); }}
-            className="mt-3 w-full text-center text-sm text-secondary transition-colors hover:text-foreground"
-          >
-            {i18nService.t('modelSelectorLearnMore')}
-          </button>
-        )}
-      </Modal>
+      />
     );
   };
 

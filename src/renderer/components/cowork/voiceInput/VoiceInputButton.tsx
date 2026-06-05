@@ -24,7 +24,8 @@ const VoiceInputButton: React.FC<VoiceInputButtonProps> = ({
   isRecognizing,
   onClick,
 }) => {
-  const unavailable = !isLoggedIn || disabled || isStreaming;
+  const loginRequired = !isLoggedIn;
+  const unavailable = disabled || isStreaming;
   const title = !isLoggedIn
     ? i18nService.t('voiceInputLoginRequired')
     : isRecording
@@ -38,6 +39,8 @@ const VoiceInputButton: React.FC<VoiceInputButtonProps> = ({
       ? 'bg-primary/10 text-primary'
       : unavailable
         ? 'cursor-not-allowed text-secondary/40 opacity-60'
+        : loginRequired
+          ? 'text-secondary hover:bg-surface-raised hover:text-foreground'
         : 'text-secondary hover:bg-surface-raised hover:text-foreground';
 
   return (

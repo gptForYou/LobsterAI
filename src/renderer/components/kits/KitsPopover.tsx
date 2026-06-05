@@ -1,7 +1,8 @@
-import { CheckIcon, PlusIcon } from '@heroicons/react/24/outline';
+import { CheckIcon } from '@heroicons/react/24/outline';
 import React, { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
+import expertKitsEmptyIconUrl from '../../assets/icons/expert-kits-empty.svg';
 import { i18nService } from '../../services/i18n';
 import { kitService } from '../../services/kit';
 import { resolveLocalizedText } from '../../services/skill';
@@ -12,16 +13,6 @@ import SearchIcon from '../icons/SearchIcon';
 import SidebarKitsIcon from '../icons/SidebarKitsIcon';
 
 const MIN_SEARCHABLE_KIT_COUNT = 3;
-
-const KitsGuideIcon: React.FC = () => (
-  <div className="relative h-16 w-16">
-    <div className="absolute inset-0 rounded-[18px] bg-gradient-to-br from-primary/20 via-primary/10 to-primary/5 ring-1 ring-inset ring-primary/15" />
-    <SidebarKitsIcon className="absolute inset-0 m-auto h-9 w-9 text-primary" />
-    <span className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-white shadow ring-2 ring-surface">
-      <PlusIcon className="h-3 w-3" strokeWidth={3} />
-    </span>
-  </div>
-);
 
 interface KitsPopoverProps {
   isOpen: boolean;
@@ -161,7 +152,7 @@ const KitsPopover: React.FC<KitsPopoverProps> = ({
   return (
     <div
       ref={popoverRef}
-      className={`absolute bottom-full left-0 z-50 mb-2 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-popover ${
+      className={`absolute bottom-full left-0 z-50 mb-1 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-popover ${
         shouldShowInstallGuide ? 'w-60' : 'w-80'
       }`}
       role="menu"
@@ -194,7 +185,12 @@ const KitsPopover: React.FC<KitsPopoverProps> = ({
         ) : shouldShowInstallGuide ? (
           <div>
             <div className="mb-3 flex justify-center">
-              <KitsGuideIcon />
+              <img
+                src={expertKitsEmptyIconUrl}
+                alt=""
+                aria-hidden="true"
+                className="h-20 w-20"
+              />
             </div>
             <div className="text-center text-[13px] font-medium text-foreground">
               {i18nService.t('noKitsInstalled')}

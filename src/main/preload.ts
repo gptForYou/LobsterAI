@@ -562,6 +562,8 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('shell:openPathWithApp', filePath, appPath),
   },
   clipboard: {
+    writeText: (text: string) =>
+      ipcRenderer.invoke(ClipboardIpc.WriteText, text),
     writeImageFromFile: (filePath: string) =>
       ipcRenderer.invoke(ClipboardIpc.WriteImageFromFile, filePath),
     writeImageFromDataUrl: (dataUrl: string) =>

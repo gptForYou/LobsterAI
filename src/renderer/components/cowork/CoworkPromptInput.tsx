@@ -1,5 +1,6 @@
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { ArrowUpIcon, FolderIcon } from '@heroicons/react/24/solid';
+import { ProviderName } from '@shared/providers';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
@@ -48,7 +49,7 @@ import SkillIcon from '../icons/SkillIcon';
 import TaskPauseIcon from '../icons/TaskPauseIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import { ActiveKitBadge, KitsButton } from '../kits';
-import ModelSelector from '../ModelSelector';
+import ModelSelector, { ModelAccessPromptKind, ModelAccessPromptModal } from '../ModelSelector';
 import { ActiveSkillBadge, SkillsPopover } from '../skills';
 import { resolveAgentModelSelection, resolveEffectiveModel, useAgentSelectedModel } from './agentModelSelection';
 import AttachmentCard from './AttachmentCard';
@@ -275,6 +276,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const [textareaScrollTop, setTextareaScrollTop] = useState(0);
     const [showAddMenu, setShowAddMenu] = useState(false);
     const [showSkillsPopover, setShowSkillsPopover] = useState(false);
+    const [modelAccessPrompt, setModelAccessPrompt] = useState<ModelAccessPromptKind | null>(null);
+    const [showVoiceLoginPrompt, setShowVoiceLoginPrompt] = useState(false);
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const addMenuButtonRef = useRef<HTMLButtonElement>(null);
@@ -416,6 +419,27 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   });
   const modelSupportsImage = !!effectiveSelectedModel?.supportsImage;
 
+  const resolveSubmitModelAccessPrompt = useCallback((): ModelAccessPromptKind | null => {
+    const hasAccessibleUserModel = availableModels.some(
+      model => !model.isServerModel && model.accessible !== false
+    );
+    if (!isLoggedIn && !hasAccessibleUserModel) {
+      return ModelAccessPromptKind.Login;
+    }
+    if (
+      effectiveSelectedModel?.providerKey === ProviderName.LobsteraiServer
+      && effectiveSelectedModel.accessible === false
+    ) {
+      return isLoggedIn ? ModelAccessPromptKind.Subscribe : ModelAccessPromptKind.Login;
+    }
+    return null;
+  }, [
+    availableModels,
+    effectiveSelectedModel?.accessible,
+    effectiveSelectedModel?.providerKey,
+    isLoggedIn,
+  ]);
+
   const {
     handleVoiceInput,
     isVoiceRecording,
@@ -432,6 +456,15 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     disabled,
     isStreaming,
   });
+
+  const handleVoiceInputClick = useCallback(() => {
+    if (disabled || isStreaming) return;
+    if (!isLoggedIn) {
+      setShowVoiceLoginPrompt(true);
+      return;
+    }
+    void handleVoiceInput();
+  }, [disabled, handleVoiceInput, isLoggedIn, isStreaming]);
 
   // Load skills on mount
   useEffect(() => {
@@ -623,6 +656,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     () => buildMediaMentionSegments(value, mediaLabels),
     [mediaLabels, value]
   );
+  const hasMediaMentionHighlight = mediaMentionSegments.some(
+    segment => segment.kind === MediaMentionSegmentKind.Mention
+  );
 
   const handleMentionSelect = useCallback((item: MediaLabel) => {
     const textarea = textareaRef.current;
@@ -686,6 +722,12 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     }
     if ((!trimmedValue && attachments.length === 0) || disabled || isPatchingModel) return;
     setShowFolderRequiredWarning(false);
+
+    const accessPrompt = resolveSubmitModelAccessPrompt();
+    if (accessPrompt) {
+      setModelAccessPrompt(accessPrompt);
+      return;
+    }
 
     // Get selected skill routing metadata, including skills from active kits.
     // OpenClaw loads SKILL.md files natively; do not inline full skill bodies here.
@@ -825,7 +867,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     dispatch(clearDraftAttachments(draftKey));
     dispatch(clearDraftSelectedTextSnippets(draftKey));
     setImageVisionHint(false);
-  }, [value, isStreaming, disabled, isPatchingModel, onSubmit, activeSkillIds, skills, activeKitIds, marketplaceKits, installedKits, attachments, showFolderSelector, workingDirectory, dispatch, draftKey, effectiveSelectedModel?.id, modelSupportsImage, mediaLabels, selectedTextSnippets]);
+  }, [value, isStreaming, disabled, isPatchingModel, onSubmit, activeSkillIds, skills, activeKitIds, marketplaceKits, installedKits, attachments, showFolderSelector, workingDirectory, dispatch, draftKey, effectiveSelectedModel?.id, modelSupportsImage, mediaLabels, selectedTextSnippets, resolveSubmitModelAccessPrompt]);
 
   const handleSelectSkill = useCallback((skill: Skill) => {
     dispatch(toggleActiveSkill(skill.id));
@@ -1479,7 +1521,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       isStreaming={isStreaming}
       isRecording={isVoiceRecording}
       isRecognizing={isVoiceRecognizing}
-      onClick={handleVoiceInput}
+      onClick={handleVoiceInputClick}
     />
   );
 
@@ -1590,13 +1632,13 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     wrapperClassName?: string;
   }) => (
     <div className={wrapperClassName}>
-      {value && (
+      {value && hasMediaMentionHighlight && (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 overflow-hidden"
+          className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
         >
           <div
-            className={`${textareaClass} whitespace-pre-wrap break-words text-foreground`}
+            className={`${textareaClass} whitespace-pre-wrap break-words text-transparent`}
             style={{
               ...style,
               transform: `translateY(-${textareaScrollTop}px)`,
@@ -1606,7 +1648,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
               segment.kind === MediaMentionSegmentKind.Mention ? (
                 <span
                   key={`${segment.kind}-${idx}`}
-                  className="rounded bg-primary/15 text-primary"
+                  className="rounded bg-primary/15 text-transparent"
                 >
                   {segment.text}
                 </span>
@@ -1630,10 +1672,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         placeholder={textareaPlaceholderText}
         disabled={disabled}
         rows={rows}
-        className={textareaClass}
+        className={`${textareaClass} relative z-10`}
         style={{
           ...style,
-          color: value ? 'transparent' : undefined,
           caretColor: 'var(--lobster-text-primary)',
         }}
       />
@@ -1979,6 +2020,21 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         )}
       </div>
       {readOnlyContextRow}
+      {modelAccessPrompt && (
+        <ModelAccessPromptModal
+          promptKind={modelAccessPrompt}
+          onClose={() => setModelAccessPrompt(null)}
+        />
+      )}
+      {showVoiceLoginPrompt && (
+        <ModelAccessPromptModal
+          promptKind={ModelAccessPromptKind.Login}
+          titleKey="voiceInputLoginTitle"
+          descriptionKey="voiceInputLoginDesc"
+          showLearnMore={false}
+          onClose={() => setShowVoiceLoginPrompt(false)}
+        />
+      )}
     </div>
   );
   }

@@ -12,6 +12,7 @@ import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { authService } from '@/services/auth';
+import { copyTextToClipboard } from '@/services/clipboard';
 import { getPortalPricingUrl, PortalPricingKeyfrom } from '@/services/endpoints';
 import { i18nService } from '@/services/i18n';
 import type { RootState } from '@/store';
@@ -1005,12 +1006,12 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   const handleCopyShareLink = useCallback(
     async (url?: string, shareCode?: string) => {
       if (!url) return;
-      try {
-        await navigator.clipboard.writeText(formatShareClipboardText(url, shareCode));
+      const copied = await copyTextToClipboard(formatShareClipboardText(url, shareCode));
+      if (copied) {
         showHtmlShareCopyStatus(HtmlShareCopyStatus.Copied);
-      } catch {
-        showHtmlShareCopyStatus(HtmlShareCopyStatus.Failed);
+        return;
       }
+      showHtmlShareCopyStatus(HtmlShareCopyStatus.Failed);
     },
     [formatShareClipboardText, showHtmlShareCopyStatus],
   );
