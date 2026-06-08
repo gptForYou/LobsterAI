@@ -20,6 +20,7 @@ import { ComputerUseRuntime } from './computerUseRuntime';
 
 const SKILLS_DIR_NAME = 'SKILLs';
 const SKILL_STATE_KEY = 'skills_state';
+const COMPUTER_USE_KIT_ICON_URL = 'https://ydhardwarecommon.nosdn.127.net/f02f8c2d2af8b1f88426327944f6e1f5.png';
 const COMPUTER_USE_MCP_REF = {
   id: ComputerUseKitId.BuiltIn,
   name: 'Computer Use',
@@ -29,12 +30,17 @@ const COMPUTER_USE_MCP_REF = {
 type InstalledKitsMap = Record<string, InstalledKitRecord>;
 type SkillStateMap = Record<string, { enabled: boolean }>;
 
+export function isComputerUseKitSupportedPlatform(): boolean {
+  return process.platform === ComputerUseRuntime.Platform
+    && process.arch === ComputerUseRuntime.Arch;
+}
+
 export function buildComputerUseMarketplaceKit(): Record<string, unknown> {
   return {
     id: ComputerUseKitId.BuiltIn,
     name: ComputerUseKitMetadata.Name,
     description: ComputerUseKitMetadata.Description,
-    icon: '',
+    icon: COMPUTER_USE_KIT_ICON_URL,
     author: 'LobsterAI',
     version: ComputerUseRuntime.Version,
     tryAsking: [
@@ -69,7 +75,8 @@ export function getInstalledKitsMap(store: SqliteStore): InstalledKitsMap {
 }
 
 export function isComputerUseKitInstalled(store: SqliteStore): boolean {
-  return Boolean(getInstalledKitsMap(store)[ComputerUseKitId.BuiltIn]);
+  return isComputerUseKitSupportedPlatform()
+    && Boolean(getInstalledKitsMap(store)[ComputerUseKitId.BuiltIn]);
 }
 
 export function buildInstalledComputerUseKitRecord(

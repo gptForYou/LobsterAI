@@ -113,6 +113,8 @@ describe('resolveComputerUseRuntimePaths', () => {
     const scriptPath = ensureComputerUseMcpServerScript();
     const script = fs.readFileSync(scriptPath, 'utf8');
 
+    expect(script).toContain("requireEnv('LOBSTER_COMPUTER_USE_HOME')");
+    expect(script).not.toContain("requireEnv('CODEX_HOME')");
     expect(script).toContain('function renewHelperTurn()');
     expect(script).toContain('function hasHelperInterruptMarker()');
     expect(script).toContain('function ensureFreshHelperTurn()');

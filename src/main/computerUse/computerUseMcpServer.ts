@@ -20,7 +20,7 @@ export const ComputerUseMcpEnv = {
   AskUserUrl: 'LOBSTER_COMPUTER_USE_ASKUSER_URL',
   BridgeSecret: 'LOBSTER_MCP_BRIDGE_SECRET',
   ExePath: 'LOBSTER_COMPUTER_USE_EXE',
-  HelperStateHome: 'CODEX_HOME',
+  HelperStateHome: 'LOBSTER_COMPUTER_USE_HOME',
   RuntimePackageRoot: 'LOBSTER_COMPUTER_USE_RUNTIME_PACKAGE_ROOT',
   SdkRoot: 'LOBSTER_COMPUTER_USE_MCP_SDK_ROOT',
   ZodRoot: 'LOBSTER_COMPUTER_USE_ZOD_ROOT',
@@ -169,7 +169,7 @@ const runtimePackageRoot = requireEnv('LOBSTER_COMPUTER_USE_RUNTIME_PACKAGE_ROOT
 const helperExePath = requireEnv('LOBSTER_COMPUTER_USE_EXE');
 const askUserUrl = requireEnv('LOBSTER_COMPUTER_USE_ASKUSER_URL');
 const bridgeSecret = requireEnv('LOBSTER_MCP_BRIDGE_SECRET');
-const helperStateHome = requireEnv('CODEX_HOME');
+const helperStateHome = requireEnv('LOBSTER_COMPUTER_USE_HOME');
 
 const { McpServer } = await import(moduleUrl(sdkRoot, 'dist', 'esm', 'server', 'mcp.js'));
 const { StdioServerTransport } = await import(moduleUrl(sdkRoot, 'dist', 'esm', 'server', 'stdio.js'));
@@ -319,7 +319,7 @@ function ensureFreshHelperTurn() {
 
 const server = new McpServer({
   name: 'computer-use',
-  version: '0.1.0',
+  version: '1.0.0',
 });
 
 const WindowSchema = z.object({

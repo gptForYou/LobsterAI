@@ -278,8 +278,7 @@ export class McpRuntime {
     }
 
     const askUserCallbackUrl = this.getAskUserCallbackUrl();
-    const shouldEnableComputerUse = process.platform === 'win32'
-      && askUserCallbackUrl !== null
+    const shouldEnableComputerUse = askUserCallbackUrl !== null
       && isComputerUseKitInstalled(this.deps.getStore());
     if (shouldEnableComputerUse) {
       const installResult = await installComputerUseRuntime();

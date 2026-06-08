@@ -22,6 +22,7 @@ import {
   buildComputerUseMarketplaceKit,
   buildInstalledComputerUseKitRecord,
   getInstalledKitsMap,
+  isComputerUseKitSupportedPlatform,
   removeComputerUseSkillArtifacts,
 } from '../../computerUse/computerUseKit';
 import {
@@ -84,7 +85,7 @@ const normalizeCapabilityList = (value: unknown): unknown[] => (
 );
 
 function appendBuiltInKitsToStoreResponse(data: string): string {
-  if (process.platform !== 'win32' || process.arch !== 'x64') {
+  if (!isComputerUseKitSupportedPlatform()) {
     return data;
   }
 
@@ -295,6 +296,9 @@ export function registerKitHandlers(deps: KitHandlerDeps): void {
     try {
       if (isComputerUseKit && bundleUrl !== ComputerUseKitBundle.BuiltIn) {
         throw new Error('Computer Use kit bundle URL does not match the built-in catalog entry');
+      }
+      if (isComputerUseKit && !isComputerUseKitSupportedPlatform()) {
+        throw new Error('Computer Use kit is only available on Windows x64.');
       }
 
       // 1. Download zip
