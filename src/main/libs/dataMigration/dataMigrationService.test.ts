@@ -60,6 +60,7 @@ test('createMigrationArchive excludes cache and log data and writes a manifest',
   writeFile(path.join(userData, 'Cache', 'cache.bin'), 'cache');
   writeFile(path.join(userData, 'Code Cache', 'code.bin'), 'code-cache');
   writeFile(path.join(userData, 'GPUCache', 'gpu.bin'), 'gpu-cache');
+  writeFile(path.join(userData, 'Network', 'Cookies'), 'network-cookies');
   writeFile(path.join(userData, 'logs', 'main.log'), 'log');
   writeFile(path.join(userData, 'Cookies'), 'cookies');
   writeFile(path.join(userData, 'DIPS-journal'), 'dips');
@@ -76,6 +77,7 @@ test('createMigrationArchive excludes cache and log data and writes a manifest',
   expect(entries.some(entry => entry.includes('/Cache/'))).toBe(false);
   expect(entries.some(entry => entry.includes('/Code Cache/'))).toBe(false);
   expect(entries.some(entry => entry.includes('/GPUCache/'))).toBe(false);
+  expect(entries.some(entry => entry.includes('/Network/'))).toBe(false);
   expect(entries.some(entry => entry.includes('/logs/'))).toBe(false);
   expect(entries.some(entry => entry.includes('/Cookies'))).toBe(false);
   expect(entries.some(entry => entry.includes('/DIPS'))).toBe(false);
@@ -176,6 +178,7 @@ test('performPendingDataMigrationRestoreSync replaces data in place and preserve
   writeFile(path.join(sourceUserData, 'openclaw', 'state', 'openclaw.json'), '{"source":true}');
   writeFile(path.join(targetUserData, DB_FILENAME), 'target-db');
   writeFile(path.join(targetUserData, 'old-only.txt'), 'old');
+  writeFile(path.join(targetUserData, 'Network', 'Cookies'), 'runtime-cookies');
   writeFile(path.join(targetUserData, 'SingletonLock'), 'runtime-lock');
 
   createMigrationArchiveSync({ userDataPath: sourceUserData, outputPath: archivePath });
@@ -191,6 +194,7 @@ test('performPendingDataMigrationRestoreSync replaces data in place and preserve
   expect(fs.readFileSync(path.join(targetUserData, DB_FILENAME), 'utf8')).toBe('source-db');
   expect(fs.readFileSync(path.join(targetUserData, 'openclaw', 'state', 'openclaw.json'), 'utf8')).toBe('{"source":true}');
   expect(fs.existsSync(path.join(targetUserData, 'old-only.txt'))).toBe(false);
+  expect(fs.readFileSync(path.join(targetUserData, 'Network', 'Cookies'), 'utf8')).toBe('runtime-cookies');
   expect(fs.readFileSync(path.join(targetUserData, 'SingletonLock'), 'utf8')).toBe('runtime-lock');
 });
 

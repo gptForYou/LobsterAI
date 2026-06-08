@@ -23,6 +23,7 @@ const EXCLUDED_TOP_LEVEL_NAMES = new Set([
   'GPUCache',
   'DawnGraphiteCache',
   'DawnWebGPUCache',
+  'Network',
   'Service Worker',
   'SingletonCookie',
   'SingletonLock',
