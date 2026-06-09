@@ -2615,6 +2615,7 @@ const getAppIconPath = (): string | undefined => {
 
 // 保存对主窗口的引用
 let mainWindow: BrowserWindow | null = null;
+let dataMigrationRestoreWindow: BrowserWindow | null = null;
 
 let isQuitting = false;
 let isDataMigrationRestoreInProgress = false;
@@ -4929,6 +4930,7 @@ if (!gotTheLock) {
       isQuitting = true;
       await releaseRendererWindowsForDataMigrationRestore();
       rendererReleased = true;
+      await showDataMigrationRestoreProgressWindow();
       await runAppCleanup('data migration restore');
       isCleanupFinished = true;
       isCleanupInProgress = false;
@@ -9078,8 +9080,140 @@ if (!gotTheLock) {
   let isCleanupFinished = false;
   let isCleanupInProgress = false;
 
+  const escapeDataMigrationHtml = (value: string): string => value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  const showDataMigrationRestoreProgressWindow = async (): Promise<void> => {
+    if (dataMigrationRestoreWindow && !dataMigrationRestoreWindow.isDestroyed()) {
+      dataMigrationRestoreWindow.show();
+      dataMigrationRestoreWindow.focus();
+      return;
+    }
+
+    const dark = nativeTheme.shouldUseDarkColors;
+    const windowTitle = t('dataMigrationRestoreProgressTitle');
+    const title = escapeDataMigrationHtml(windowTitle);
+    const desc = escapeDataMigrationHtml(t('dataMigrationRestoreProgressDesc'));
+    const warning = escapeDataMigrationHtml(t('dataMigrationRestoreProgressWarning'));
+    const background = dark ? '#111827' : '#f8fafc';
+    const surface = dark ? '#1f2937' : '#ffffff';
+    const foreground = dark ? '#f9fafb' : '#111827';
+    const secondary = dark ? '#d1d5db' : '#4b5563';
+    const border = dark ? '#374151' : '#e5e7eb';
+    const primary = '#2563eb';
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+  <title>${title}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: ${background};
+      color: ${foreground};
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .panel {
+      width: min(360px, calc(100vw - 40px));
+      border: 1px solid ${border};
+      border-radius: 14px;
+      background: ${surface};
+      padding: 28px 24px;
+      text-align: center;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
+    }
+    .spinner {
+      width: 42px;
+      height: 42px;
+      margin: 0 auto 18px;
+      border-radius: 999px;
+      border: 4px solid rgba(37, 99, 235, 0.18);
+      border-top-color: ${primary};
+      animation: spin 0.9s linear infinite;
+    }
+    h1 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.4;
+      font-weight: 650;
+    }
+    p {
+      margin: 12px 0 0;
+      color: ${secondary};
+      font-size: 13px;
+      line-height: 1.65;
+    }
+    .warning {
+      margin-top: 18px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(245, 158, 11, 0.12);
+      color: ${dark ? '#fde68a' : '#92400e'};
+      text-align: left;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <div class="spinner" aria-hidden="true"></div>
+    <h1>${title}</h1>
+    <p>${desc}</p>
+    <p class="warning">${warning}</p>
+  </main>
+</body>
+</html>`;
+
+    const progressWindow = new BrowserWindow({
+      width: 440,
+      height: 300,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      show: false,
+      title: windowTitle,
+      autoHideMenuBar: true,
+      backgroundColor: background,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        partition: `data-migration-restore-${Date.now()}`,
+      },
+    });
+    dataMigrationRestoreWindow = progressWindow;
+    progressWindow.setMenu(null);
+    progressWindow.on('closed', () => {
+      if (dataMigrationRestoreWindow === progressWindow) {
+        dataMigrationRestoreWindow = null;
+      }
+    });
+
+    try {
+      await progressWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    } catch (error) {
+      console.warn('[DataMigration] failed to load restore progress window:', error);
+    }
+    if (!progressWindow.isDestroyed()) {
+      progressWindow.show();
+      progressWindow.focus();
+    }
+  };
+
   const releaseRendererWindowsForDataMigrationRestore = async (): Promise<void> => {
-    const windows = BrowserWindow.getAllWindows().filter(win => !win.isDestroyed());
+    const windows = BrowserWindow.getAllWindows()
+      .filter(win => !win.isDestroyed() && win !== dataMigrationRestoreWindow);
     if (windows.length === 0) {
       return;
     }

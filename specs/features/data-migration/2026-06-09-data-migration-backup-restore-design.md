@@ -397,10 +397,11 @@ staging 目录中的 `lobsterai.sqlite` 必须来自该快照，不能来自 liv
 
 1. renderer 显示全局 loading。
 2. 停止接受新的 Cowork、IM、定时任务和设置写入请求。
-3. 释放所有 BrowserWindow/renderer 进程持有的 Chromium profile 文件句柄，尤其是 Windows 上的 `Local Storage` LevelDB 目录；主进程必须继续运行并保持单实例锁，不能在恢复完成前退出。
-4. 停止或暂停 OpenClaw gateway、定时任务服务、IM gateway。
-5. flush 并关闭 SQLite store。
-6. 停止日志之外的所有可写入 userData 的服务。
+3. 释放原业务 BrowserWindow/renderer 进程持有的 Chromium profile 文件句柄，尤其是 Windows 上的 `Local Storage` LevelDB 目录；主进程必须继续运行并保持单实例锁，不能在恢复完成前退出。
+4. 立即打开一个不使用 LobsterAI `userData` 的专用恢复进度窗口，使用非持久化 session/partition，只展示 loading 和安全提示，不访问 `Local Storage`。
+5. 停止或暂停 OpenClaw gateway、定时任务服务、IM gateway。
+6. flush 并关闭 SQLite store。
+7. 停止日志之外的所有可写入 userData 的服务。
 
 如果当前进程无法可靠关闭 SQLite 或 gateway，应退回“pending restore at startup”模式，但必须由当前进程显示等待页并负责 relaunch，不能让用户在中间手动启动。
 
