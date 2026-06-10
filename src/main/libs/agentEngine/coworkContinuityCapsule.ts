@@ -20,6 +20,7 @@ export type CoworkContinuityCapsule = {
   lastSourceMessageId?: string;
   lastCompactedAt?: number;
   currentObjective?: string;
+  recentUserRequests?: string[];
   userConstraints: string[];
   decisions: string[];
   recentActions: string[];
@@ -59,6 +60,8 @@ export type ContinuityCapsuleRefreshOptions = {
 const CAPSULE_VERSION = 1 as const;
 const MAX_TEXT_CHARS = 220;
 const MAX_OBJECTIVE_CHARS = 320;
+const MAX_RECENT_USER_REQUEST_CHARS = 260;
+const MAX_RECENT_USER_REQUESTS = 12;
 const MAX_USER_CONSTRAINTS = 8;
 const MAX_DECISIONS = 12;
 const MAX_RECENT_ACTIONS = 12;
@@ -102,6 +105,28 @@ const dedupeStrings = (values: string[], limit: number): string[] => {
 
 const mergeStrings = (previous: string[] | undefined, next: string[], limit: number): string[] => {
   return dedupeStrings([...next, ...(previous ?? [])], limit);
+};
+
+const mergeChronologicalStrings = (
+  previous: string[] | undefined,
+  next: string[],
+  limit: number,
+  maxChars = MAX_TEXT_CHARS,
+): string[] => {
+  const combined = [...(previous ?? []), ...next]
+    .map((value) => truncateText(value, maxChars))
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (let i = combined.length - 1; i >= 0; i--) {
+    const value = combined[i];
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.unshift(value);
+    if (result.length >= limit) break;
+  }
+  return result;
 };
 
 const extractMatches = (text: string, pattern: RegExp, limit: number): string[] => {
@@ -216,6 +241,17 @@ const findLatestUserObjective = (messages: CoworkMessage[], previous?: string): 
   return previous;
 };
 
+const extractRecentUserRequests = (messages: CoworkMessage[]): string[] => {
+  return messages
+    .filter((message) => message.type === 'user')
+    .map((message) => truncateText(message.content, MAX_RECENT_USER_REQUEST_CHARS))
+    .filter((content) => content && !CONTINUATION_PROMPT_RE.test(content));
+};
+
+const extractUserQuestions = (messages: CoworkMessage[]): string[] => {
+  return extractRecentUserRequests(messages).filter((content) => content.includes('?') || content.includes('？'));
+};
+
 const summarizeToolResults = (messages: CoworkMessage[]): {
   verification: string[];
   recentFailures: CoworkContinuityCapsule['recentFailures'];
@@ -265,6 +301,12 @@ export const buildCoworkContinuityCapsule = (options: ContinuityCapsuleRefreshOp
     ...(options.sourceMessageId ? { lastSourceMessageId: options.sourceMessageId } : previous?.lastSourceMessageId ? { lastSourceMessageId: previous.lastSourceMessageId } : {}),
     ...(options.compactedAt ? { lastCompactedAt: options.compactedAt } : previous?.lastCompactedAt ? { lastCompactedAt: previous.lastCompactedAt } : {}),
     currentObjective: findLatestUserObjective(recentMessages, previous?.currentObjective),
+    recentUserRequests: mergeChronologicalStrings(
+      previous?.recentUserRequests,
+      extractRecentUserRequests(recentMessages),
+      MAX_RECENT_USER_REQUESTS,
+      MAX_RECENT_USER_REQUEST_CHARS,
+    ),
     userConstraints: mergeStrings(previous?.userConstraints, extractMatches(userText, CONSTRAINT_RE, MAX_USER_CONSTRAINTS), MAX_USER_CONSTRAINTS),
     decisions: mergeStrings(previous?.decisions, extractMatches(assistantText, DECISION_RE, MAX_DECISIONS), MAX_DECISIONS),
     recentActions: mergeStrings(previous?.recentActions, extractMatches(assistantText, DECISION_RE, MAX_RECENT_ACTIONS), MAX_RECENT_ACTIONS),
@@ -274,7 +316,7 @@ export const buildCoworkContinuityCapsule = (options: ContinuityCapsuleRefreshOp
     nextSteps: mergeStrings(previous?.nextSteps, extractMatches(recentText, NEXT_STEP_RE, MAX_NEXT_STEPS), MAX_NEXT_STEPS),
     recentFailures: mergeFailures(previous?.recentFailures, toolSummary.recentFailures),
     activeCapabilities: mergeCapabilities(previous?.activeCapabilities, extractCapabilities(recentMessages)),
-    openQuestions: mergeStrings(previous?.openQuestions, extractMatches(userText, /\?[^?\n\r]{0,180}|[？][^？\n\r]{0,180}/g, MAX_OPEN_QUESTIONS), MAX_OPEN_QUESTIONS),
+    openQuestions: mergeChronologicalStrings(previous?.openQuestions, extractUserQuestions(recentMessages), MAX_OPEN_QUESTIONS),
   };
 };
 
@@ -292,6 +334,7 @@ export const formatCoworkContinuityCapsuleBridge = (capsule: CoworkContinuityCap
   if (capsule.currentObjective) {
     sections.push('Current objective:', truncateText(capsule.currentObjective, MAX_OBJECTIVE_CHARS));
   }
+  pushListSection(sections, 'Recent user requests:', capsule.recentUserRequests ?? []);
   pushListSection(sections, 'User constraints:', capsule.userConstraints);
   pushListSection(sections, 'Decisions:', capsule.decisions);
   pushListSection(sections, 'Recent actions:', capsule.recentActions);
