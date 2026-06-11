@@ -38,6 +38,9 @@ const GATEWAY_PORT_SCAN_LIMIT = 80;
 const GATEWAY_BOOT_TIMEOUT_MS = 300 * 1000;
 const GATEWAY_MAX_RESTART_ATTEMPTS = 5;
 const GATEWAY_RESTART_DELAYS = [3_000, 5_000, 10_000, 20_000, 30_000];
+const OPENCLAW_GATEWAY_MAX_OLD_SPACE_MB = 4096;
+const OPENCLAW_GATEWAY_MAX_OLD_SPACE_OPTION = `--max-old-space-size=${OPENCLAW_GATEWAY_MAX_OLD_SPACE_MB}`;
+const NODE_MAX_OLD_SPACE_RE = /(?:^|\s)--max-old-space-size(?:=|\s|$)/;
 
 export type { OpenClawEnginePhase } from '../../shared/openclawEngine/constants';
 
@@ -152,6 +155,13 @@ const fetchWithTimeout = async (url: string, timeoutMs: number): Promise<Respons
     clearTimeout(timeout);
   }
 };
+
+export function buildOpenClawGatewayExecArgv(existingNodeOptions: string | undefined): string[] {
+  if (NODE_MAX_OLD_SPACE_RE.test(existingNodeOptions?.trim() ?? '')) {
+    return [];
+  }
+  return [OPENCLAW_GATEWAY_MAX_OLD_SPACE_OPTION];
+}
 
 export class OpenClawEngineManager extends EventEmitter {
   private readonly baseDir: string;
@@ -561,6 +571,12 @@ export class OpenClawEngineManager extends EventEmitter {
     }
 
     const forkArgs = ['gateway', '--bind', 'loopback', '--port', String(port), '--token', token, '--verbose'];
+    const gatewayExecArgv = buildOpenClawGatewayExecArgv(process.env.NODE_OPTIONS);
+    if (gatewayExecArgv.length > 0) {
+      console.log(`[OpenClaw] gateway V8 old-space limit set to ${OPENCLAW_GATEWAY_MAX_OLD_SPACE_MB}MB`);
+    } else {
+      console.log('[OpenClaw] gateway V8 old-space limit is controlled by existing NODE_OPTIONS');
+    }
     console.log(`[OpenClaw] forking gateway: entry=${openclawEntry}, cwd=${runtime.root}, port=${port}, args=${JSON.stringify(forkArgs)}`);
 
     // On Windows, use child_process.spawn with ELECTRON_RUN_AS_NODE=1 instead of
@@ -570,7 +586,7 @@ export class OpenClawEngineManager extends EventEmitter {
     if (process.platform === 'win32') {
       child = spawn(
         process.execPath,
-        [openclawEntry, ...forkArgs],
+        [...gatewayExecArgv, openclawEntry, ...forkArgs],
         {
           cwd: runtime.root,
           env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
@@ -584,6 +600,7 @@ export class OpenClawEngineManager extends EventEmitter {
         forkArgs,
         {
           cwd: runtime.root,
+          execArgv: gatewayExecArgv,
           env,
           stdio: 'pipe',
           serviceName: 'OpenClaw Gateway',
