@@ -1622,7 +1622,6 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     isLarge,
     isStreaming,
     isVoiceRecording,
-    hasPromptText,
   });
 
   const largeInputToolActions = (
@@ -1780,14 +1779,6 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
           caretColor: 'var(--lobster-text-primary)',
           }}
         />
-        {voiceRecordingUiState.showCenteredRecordingStatus && (
-          <div className="absolute inset-x-4 top-1/2 z-20 flex -translate-y-1/2 justify-center">
-            <VoiceInputRecordingStatus
-              elapsedSeconds={recordingElapsedSeconds}
-              showHint
-            />
-          </div>
-        )}
       </div>
     );
 
@@ -1910,7 +1901,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                     <div className="pointer-events-none absolute inset-x-0 top-1/2 z-20 flex -translate-y-1/2 justify-center">
                       <VoiceInputRecordingStatus
                         elapsedSeconds={recordingElapsedSeconds}
-                        showHint={false}
+                        showHint={!hasPromptText}
                       />
                     </div>
                   )}
@@ -2026,7 +2017,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                   <div className="pointer-events-none absolute inset-x-0 top-1/2 z-20 flex -translate-y-1/2 justify-center">
                     <VoiceInputRecordingStatus
                       elapsedSeconds={recordingElapsedSeconds}
-                      showHint={false}
+                      showHint={!hasPromptText}
                     />
                   </div>
                 )}

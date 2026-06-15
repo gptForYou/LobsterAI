@@ -18,9 +18,9 @@ const VoiceInputRecordingStatus: React.FC<VoiceInputRecordingStatusProps> = ({
   elapsedSeconds,
   showHint,
 }) => (
-  <div className="pointer-events-none flex min-w-0 flex-1 select-none flex-col items-center justify-center gap-2 text-center">
+  <div className="pointer-events-none relative flex min-w-0 flex-1 select-none items-center justify-center text-center">
     {showHint && (
-      <div className="text-[13px] leading-5 text-secondary">
+      <div className="absolute bottom-full left-1/2 mb-4 w-[calc(100vw-48px)] max-w-[280px] -translate-x-1/2 text-[13px] leading-5 text-secondary">
         {i18nService.t('voiceInputListeningHint')}
       </div>
     )}
