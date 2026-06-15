@@ -32,20 +32,7 @@ describe('getCoworkVoiceRecordingUiState', () => {
     }).showTaskStopButton).toBe(false);
   });
 
-  test('shows the footer recording status and hides controls before text exists', () => {
-    const state = getCoworkVoiceRecordingUiState({
-      isLarge: true,
-      isStreaming: false,
-      isVoiceRecording: true,
-    });
-
-    expect(state.shouldHideInputPlaceholder).toBe(true);
-    expect(state.showFooterRecordingStatus).toBe(true);
-    expect(state.showLargeInputControls).toBe(false);
-    expect(state.showLargeModelSelector).toBe(false);
-  });
-
-  test('keeps the recording status in the footer once text exists', () => {
+  test('shows the footer recording status and hides controls in large recording mode', () => {
     const state = getCoworkVoiceRecordingUiState({
       isLarge: true,
       isStreaming: false,

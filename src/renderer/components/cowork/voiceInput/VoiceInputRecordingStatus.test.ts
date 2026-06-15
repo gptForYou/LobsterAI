@@ -17,6 +17,18 @@ describe('VoiceInputRecordingStatus', () => {
     expect(html).toContain('0:01');
   });
 
+  test('positions the hint above the shared wave and timer anchor', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(VoiceInputRecordingStatus, {
+        elapsedSeconds: 1,
+        showHint: true,
+      }),
+    );
+
+    expect(html).toContain('absolute bottom-full');
+    expect(html).toContain('mb-4');
+  });
+
   test('hides the listening hint once prompt text exists', () => {
     const html = renderToStaticMarkup(
       React.createElement(VoiceInputRecordingStatus, {
