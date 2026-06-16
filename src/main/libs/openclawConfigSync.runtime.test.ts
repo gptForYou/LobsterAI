@@ -1366,6 +1366,7 @@ describe('OpenClawConfigSync runtime config output', () => {
           fetch: {
             enabled: true,
             useEnvProxy: true,
+            useTrustedEnvProxy: true,
           },
         },
       },
@@ -1403,6 +1404,7 @@ describe('OpenClawConfigSync runtime config output', () => {
       ssrfPolicy: { allowRfc2544BenchmarkRange: true },
     });
     expect(config.tools.web.fetch.useEnvProxy).toBeUndefined();
+    expect(config.tools.web.fetch.useTrustedEnvProxy).toBeUndefined();
   });
 
   test('marks MCP server config changes as restart impact', async () => {

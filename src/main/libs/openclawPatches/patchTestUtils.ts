@@ -30,3 +30,8 @@ export function expectPatchContains(patchFile: string, snippets: string[]): void
     expect(patchContent).toContain(snippet);
   }
 }
+
+export function expectCurrentOpenClawPatchMissing(patchFile: string): void {
+  const patchPath = path.join(getCurrentOpenClawPatchDir(), patchFile);
+  expect(fs.existsSync(patchPath)).toBe(false);
+}
