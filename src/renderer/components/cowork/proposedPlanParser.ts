@@ -1,10 +1,13 @@
 const OPEN_TAG_PATTERN = /<proposed_plan\b[^>]*>/i;
 const CLOSE_TAG_PATTERN = /<\/proposed_plan\s*>/i;
 const OPEN_TAG_PREFIX = '<proposed_plan';
+const FENCE_PATTERN = /^\s*(```|~~~)/;
+const PLAN_SECTION_LABEL_PATTERN = /^(?:(#{1,6})\s*)?(?:\*\*)?(Summary|Implementation Approach|Key Changes|Validation|Assumptions or Questions)\s*[:：](?:\*\*)?\s+(.+)$/i;
 
 export interface ProposedPlanParseResult {
   visibleText: string;
   planText: string | null;
+  didNormalizePlanText?: boolean;
 }
 
 const findTrailingOpenTagPrefixIndex = (content: string): number => {
@@ -16,6 +19,39 @@ const findTrailingOpenTagPrefixIndex = (content: string): number => {
   }
   return -1;
 };
+
+const normalizeProposedPlanMarkdownWithFlag = (content: string): { text: string; didNormalize: boolean } => {
+  let isInFence = false;
+  let didNormalize = false;
+
+  const text = content
+    .split('\n')
+    .flatMap((line) => {
+      if (FENCE_PATTERN.test(line)) {
+        isInFence = !isInFence;
+        return [line];
+      }
+
+      if (isInFence) return [line];
+
+      const match = PLAN_SECTION_LABEL_PATTERN.exec(line);
+      if (!match) return [line];
+
+      const [, headingMarker, label, body] = match;
+      didNormalize = true;
+      return [
+        `${headingMarker ?? '##'} ${label}`,
+        '',
+        body,
+      ];
+    })
+    .join('\n');
+
+  return { text, didNormalize };
+};
+
+export const normalizeProposedPlanMarkdown = (content: string): string =>
+  normalizeProposedPlanMarkdownWithFlag(content).text;
 
 export const parseProposedPlanBlock = (content: string): ProposedPlanParseResult => {
   const openMatch = OPEN_TAG_PATTERN.exec(content);
@@ -35,18 +71,23 @@ export const parseProposedPlanBlock = (content: string): ProposedPlanParseResult
   const closeMatch = CLOSE_TAG_PATTERN.exec(content.slice(contentStart));
   if (!closeMatch) {
     const visibleText = content.slice(0, openIndex).replace(/[ \t]*\n?$/, '').trimEnd();
-    const planText = content.slice(contentStart).trim();
-    return { visibleText, planText: planText || null };
+    const normalizedPlan = normalizeProposedPlanMarkdownWithFlag(content.slice(contentStart).trim());
+    return {
+      visibleText,
+      planText: normalizedPlan.text || null,
+      didNormalizePlanText: normalizedPlan.didNormalize || undefined,
+    };
   }
 
   const closeIndex = contentStart + closeMatch.index;
   const before = content.slice(0, openIndex).replace(/[ \t]*\n?$/, '');
   const after = content.slice(closeIndex + closeMatch[0].length).replace(/^\n?/, '');
   const visibleText = [before, after].filter(Boolean).join(before && after ? '\n' : '').trimEnd();
-  const planText = content.slice(contentStart, closeIndex).trim();
+  const normalizedPlan = normalizeProposedPlanMarkdownWithFlag(content.slice(contentStart, closeIndex).trim());
 
   return {
     visibleText,
-    planText: planText || null,
+    planText: normalizedPlan.text || null,
+    didNormalizePlanText: normalizedPlan.didNormalize || undefined,
   };
 };

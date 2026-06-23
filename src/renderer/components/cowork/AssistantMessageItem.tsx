@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 
 import { i18nService } from '../../services/i18n';
 import type { CoworkMessage, CoworkMessageMetadata } from '../../types/cowork';
@@ -65,6 +65,14 @@ const AssistantMessageItem: React.FC<{
     proposedPlan.planText,
   ].filter((part): part is string => Boolean(part)).join('\n\n');
   const modelLabel = getMessageModelLabel(turnMetadata);
+  useEffect(() => {
+    if (!proposedPlan.didNormalizePlanText) return;
+    window.electron?.log?.fromRenderer?.(
+      'debug',
+      'AssistantMessageItem',
+      `Normalized inline section labels in proposed plan ${message.id}.`,
+    );
+  }, [message.id, proposedPlan.didNormalizePlanText]);
   const handleBlur = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
     const nextTarget = event.relatedTarget;
     if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
