@@ -980,6 +980,11 @@ interface IElectronAPI {
   appInfo: {
     getVersion: () => Promise<string>;
     getSystemLocale: () => Promise<string>;
+    getKeyfromAttribution: () => Promise<{
+      firstKeyfrom: string;
+      latestKeyfrom: string;
+      updatedAt: number;
+    }>;
     relaunch: () => Promise<void>;
   };
   appUpdate: {

@@ -23,7 +23,7 @@ import {
   LogReporterEntry,
   reportYdAnalyzer,
 } from '../../services/logReporter';
-import { skillService } from '../../services/skill';
+import { resolveLocalizedText, skillService } from '../../services/skill';
 import { RootState } from '../../store';
 import { selectDraftPrompts } from '../../store/selectors/coworkSelectors';
 import {
@@ -114,6 +114,35 @@ const summarizePromptShape = (prompt: string): string => {
   const blankLines = lines.filter(line => line.trim().length === 0).length;
   const orderedListLines = lines.filter(line => /^\s*\d+\.\s+/.test(line)).length;
   return `chars=${prompt.length}, lines=${lines.length}, blankLines=${blankLines}, orderedListLines=${orderedListLines}`;
+};
+
+const getModelAnalyticsSource = (model: Model, selectorGroup: ModelSelectorChangeMeta['group']): string => {
+  if (model.isServerModel || model.providerKey === ProviderName.LobsteraiServer || selectorGroup === ModelSelectorGroup.Server) {
+    return 'package';
+  }
+  return 'custom';
+};
+
+const reportModelSelected = (
+  model: Model,
+  selectorGroup: ModelSelectorChangeMeta['group'],
+  target: 'agent' | 'session',
+  agentId: string,
+  sessionId?: string,
+): void => {
+  void reportYdAnalyzer({
+    action: LogReporterAction.ModelSelected,
+    modelId: model.id,
+    modelName: model.name,
+    modelSource: getModelAnalyticsSource(model, selectorGroup),
+    providerKey: model.providerKey,
+    provider: model.provider,
+    selectorGroup,
+    target,
+    agentId,
+    sessionId,
+    isServerModel: model.isServerModel === true,
+  });
 };
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
@@ -1027,8 +1056,23 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
   }, [onManageSkills]);
 
   const handleSelectKit = useCallback((kitId: string) => {
+    const willSelect = !activeKitIds.includes(kitId);
     dispatch(toggleActiveKit(kitId));
-  }, [dispatch]);
+    if (willSelect) {
+      const marketplaceKit = marketplaceKits.find(kit => kit.id === kitId);
+      const installedKit = installedKits[kitId];
+      void reportYdAnalyzer({
+        action: LogReporterAction.ExpertKitSelected,
+        kitId,
+        kitName: marketplaceKit ? resolveLocalizedText(marketplaceKit.name) : undefined,
+        kitSource: marketplaceKit ? 'lobsterai-kits' : 'installed',
+        isInstalled: !!installedKit,
+        skillCount: installedKit?.skills?.skillIds.length ?? marketplaceKit?.skills?.list.length,
+        mcpServerCount: installedKit?.mcpServers.length ?? marketplaceKit?.mcpServers?.length,
+        connectorCount: installedKit?.connectors.length ?? marketplaceKit?.connectors?.length,
+      });
+    }
+  }, [activeKitIds, dispatch, installedKits, marketplaceKits]);
 
   const handleManageKits = useCallback(() => {
     if (onManageKits) {
@@ -1609,6 +1653,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
               }
 
               logPromptModelSelection('debug', `switched session ${sessionId} to ${patchedSession.modelOverride || modelRef}`);
+              reportModelSelected(selectedModel, meta.group, 'session', currentAgentId, sessionId);
               if (currentAgent && agentModelIsInvalid) {
                 void agentService.updateAgent(currentAgent.id, { model: modelRef });
               }
@@ -1637,6 +1682,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             `persisting agent ${currentAgentId} model ${modelRef}; selector group is ${meta.group}; server model is ${selectedModel.isServerModel === true}`,
           );
           await persistAgentModelSelection(selectedModel);
+          reportModelSelected(selectedModel, meta.group, 'agent', currentAgentId);
         }}
       />
       {agentModelIsInvalid && (
