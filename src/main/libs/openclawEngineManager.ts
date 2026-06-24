@@ -1,6 +1,6 @@
-import { type ChildProcess,spawn } from 'child_process';
+import { type ChildProcess, spawn } from 'child_process';
 import crypto from 'crypto';
-import { app, type UtilityProcess,utilityProcess } from 'electron';
+import { app } from 'electron';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import net from 'net';
@@ -32,7 +32,7 @@ const gwDiagTs = (): string => {
 };
 import { isSystemProxyEnabled, resolveSystemProxyUrlForTargets } from './systemProxy';
 
-type GatewayProcess = UtilityProcess | ChildProcess;
+type GatewayProcess = ChildProcess;
 
 const DEFAULT_OPENCLAW_VERSION = '2026.2.23';
 const DEFAULT_GATEWAY_PORT = 18789;
@@ -533,7 +533,7 @@ export class OpenClawEngineManager extends EventEmitter {
 
     // Ensure the gateway process uses the host's local timezone for logging.
     // macOS does not set TZ in the environment by default (it uses NSTimeZone/ICU),
-    // so utilityProcess.fork() children may fall back to UTC for date formatting.
+    // so Electron child processes may fall back to UTC for date formatting.
     if (!env.TZ) {
       const hostTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
       if (hostTimezone) {
@@ -590,37 +590,22 @@ export class OpenClawEngineManager extends EventEmitter {
     } else {
       console.log('[OpenClaw] gateway V8 old-space limit is controlled by existing NODE_OPTIONS');
     }
-    console.log(`[OpenClaw] forking gateway: entry=${openclawEntry}, cwd=${runtime.root}, port=${port}, args=${JSON.stringify(forkArgs)}`);
+    console.log(`[OpenClaw] spawning gateway with Electron Node mode: entry=${openclawEntry}, cwd=${runtime.root}, port=${port}, args=${JSON.stringify(forkArgs)}`);
 
-    // On Windows, use child_process.spawn with ELECTRON_RUN_AS_NODE=1 instead of
-    // utilityProcess.fork(). Benchmark shows utilityProcess has ~5x overhead for
-    // cold ESM compilation on Windows (163s vs 34s for a 28MB bundle).
-    let child: GatewayProcess;
-    if (process.platform === 'win32') {
-      child = spawn(
-        process.execPath,
-        [...gatewayExecArgv, openclawEntry, ...forkArgs],
-        {
-          cwd: runtime.root,
-          env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-        },
-      );
-    } else {
-      child = utilityProcess.fork(
-        openclawEntry,
-        forkArgs,
-        {
-          cwd: runtime.root,
-          execArgv: gatewayExecArgv,
-          env,
-          stdio: 'pipe',
-          serviceName: 'OpenClaw Gateway',
-        },
-      );
-    }
-    console.log(`[OpenClaw] startGateway: gateway process created (${elapsed()}), platform=${process.platform}`);
+    // Run the gateway through Electron's Node mode on every platform. Keeping
+    // ELECTRON_RUN_AS_NODE=1 in the gateway environment also prevents nested
+    // Electron child invocations from treating Node arguments as app paths.
+    const child = spawn(
+      process.execPath,
+      [...gatewayExecArgv, openclawEntry, ...forkArgs],
+      {
+        cwd: runtime.root,
+        env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: process.platform === 'win32',
+      },
+    );
+    console.log(`[OpenClaw] startGateway: gateway process created (${elapsed()}), platform=${process.platform}, launcher=spawn, electronRunAsNode=1`);
 
     this.gatewayProcess = child;
     this.gatewaySpawnedAt = Date.now();
@@ -941,7 +926,7 @@ export class OpenClawEngineManager extends EventEmitter {
 
   private resolveOpenClawEntry(runtimeRoot: string): string | null {
     // Bundle fast-path via CJS launcher is only needed on Windows where
-    // utilityProcess.fork() cannot load ESM directly. On macOS/Linux,
+    // the launcher also normalizes argv and file URL handling. On macOS/Linux,
     // ensureBareEntryFiles already skips extraction when bundle exists,
     // but this method falls through to gateway.asar/openclaw.mjs which
     // ESM loads directly without a CJS wrapper.
@@ -961,8 +946,8 @@ export class OpenClawEngineManager extends EventEmitter {
     ]);
     if (!esmEntry) return null;
 
-    // On Windows, utilityProcess.fork() cannot load ESM modules directly because
-    // the ESM loader misinterprets the drive letter (e.g. "D:") as a URL scheme.
+    // On Windows, keep a CJS wrapper so ESM imports are loaded through file://
+    // URLs and drive letters (e.g. "D:") are not misinterpreted as schemes.
     // Work around this by generating a CJS wrapper that imports the ESM entry via file:// URL.
     if (process.platform === 'win32') {
       return this.ensureGatewayLauncherCjs(runtimeRoot, esmEntry);
@@ -975,8 +960,8 @@ export class OpenClawEngineManager extends EventEmitter {
     const esmBasename = path.basename(esmEntry);
     const expectedContent =
       `// Auto-generated CJS wrapper for Windows ESM compatibility.\n` +
-      `// On Windows, Electron utilityProcess.fork() cannot load ESM modules directly\n` +
-      `// because the drive letter (e.g. "D:") is misinterpreted as a URL scheme.\n` +
+      `// On Windows, load the ESM gateway through file:// URLs so drive letters\n` +
+      `// (e.g. "D:") are not misinterpreted as URL schemes.\n` +
       `const { pathToFileURL } = require('node:url');\n` +
       `const path = require('node:path');\n` +
       `const fs = require('node:fs');\n` +
@@ -991,7 +976,7 @@ export class OpenClawEngineManager extends EventEmitter {
       `const esmEntry = path.join(__dirname, '${esmBasename}');\n` +
       `// Patch argv so openclaw's isMainModule() recognizes this as the main entry.\n` +
       `// In standard Node.js: process.argv = [execPath, scriptPath, ...args]\n` +
-      `// In Electron utilityProcess: process.argv = [execPath, ...args] (no scriptPath)\n` +
+      `// Some Electron launch paths provide process.argv = [execPath, ...args] (no scriptPath)\n` +
       `// We must detect which layout we have to avoid overwriting the 'gateway' command arg.\n` +
       `// Use fs.realpathSync to resolve symlinks/junctions so that e.g.\n` +
       `// "...current/gateway-launcher.cjs" (junction) matches "...win-x64/gateway-launcher.cjs".\n` +
@@ -1007,12 +992,12 @@ export class OpenClawEngineManager extends EventEmitter {
       `process.stderr.write('[openclaw-launcher] node=' + process.versions.node + '\\n');\n` +
       `// Keep the event loop alive while openclaw's fire-and-forget import chain\n` +
       `// loads its full module graph and starts the gateway server. Without this,\n` +
-      `// Electron's utilityProcess exits before the async work completes.\n` +
+      `// Electron child launchers may exit before the async work completes.\n` +
       `const _keepAlive = setInterval(() => {}, 30000);\n` +
       `const t0 = Date.now();\n` +
       `// Strategy 1: Try the esbuild single-file bundle via dynamic import().\n` +
       `// The bundle collapses ~1100 ESM modules into one file, eliminating the\n` +
-      `// expensive ESM module resolution overhead in Electron's utilityProcess.\n` +
+      `// expensive ESM module resolution overhead in Electron child processes.\n` +
       `// We use import() (not require()) to avoid the ESM loader re-entrancy lock\n` +
       `// that causes microtask deadlocks when require(esm) is used.\n` +
       `const bundlePath = path.join(__dirname, 'gateway-bundle.mjs');\n` +
@@ -1440,7 +1425,7 @@ export class OpenClawEngineManager extends EventEmitter {
     });
   }
 
-  // Workaround: Electron utilityProcess V8 isolate reports getTimezoneOffset()=0.
+  // Workaround: Electron child-process logs can contain UTC timestamps.
   private static rewriteUtcTimestamps(text: string): string {
     return text.replace(
       /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g,
@@ -1497,8 +1482,6 @@ export class OpenClawEngineManager extends EventEmitter {
 
   private attachGatewayExitHandlers(child: GatewayProcess): void {
     child.once('error', (...args: unknown[]) => {
-      // UtilityProcess error: (type: string, location: string)
-      // ChildProcess error: (err: Error)
       const errorMsg = args[0] instanceof Error
         ? args[0].message
         : `${args[0]}${args[1] ? ` (${args[1]})` : ''}`;
