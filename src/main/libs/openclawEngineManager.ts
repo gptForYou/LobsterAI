@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from 'child_process';
 import crypto from 'crypto';
-import { app } from 'electron';
+import { app, type UtilityProcess, utilityProcess } from 'electron';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import net from 'net';
@@ -32,7 +32,7 @@ const gwDiagTs = (): string => {
 };
 import { isSystemProxyEnabled, resolveSystemProxyUrlForTargets } from './systemProxy';
 
-type GatewayProcess = ChildProcess;
+type GatewayProcess = UtilityProcess | ChildProcess;
 
 const DEFAULT_OPENCLAW_VERSION = '2026.2.23';
 const DEFAULT_GATEWAY_PORT = 18789;
@@ -590,22 +590,37 @@ export class OpenClawEngineManager extends EventEmitter {
     } else {
       console.log('[OpenClaw] gateway V8 old-space limit is controlled by existing NODE_OPTIONS');
     }
-    console.log(`[OpenClaw] spawning gateway with Electron Node mode: entry=${openclawEntry}, cwd=${runtime.root}, port=${port}, args=${JSON.stringify(forkArgs)}`);
+    console.log(`[OpenClaw] forking gateway: entry=${openclawEntry}, cwd=${runtime.root}, port=${port}, args=${JSON.stringify(forkArgs)}`);
 
-    // Run the gateway through Electron's Node mode on every platform. Keeping
-    // ELECTRON_RUN_AS_NODE=1 in the gateway environment also prevents nested
-    // Electron child invocations from treating Node arguments as app paths.
-    const child = spawn(
-      process.execPath,
-      [...gatewayExecArgv, openclawEntry, ...forkArgs],
-      {
-        cwd: runtime.root,
-        env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: process.platform === 'win32',
-      },
-    );
-    console.log(`[OpenClaw] startGateway: gateway process created (${elapsed()}), platform=${process.platform}, launcher=spawn, electronRunAsNode=1`);
+    // On Windows, use child_process.spawn with ELECTRON_RUN_AS_NODE=1 instead of
+    // utilityProcess.fork(). Benchmark shows utilityProcess has ~5x overhead for
+    // cold ESM compilation on Windows (163s vs 34s for a 28MB bundle).
+    let child: GatewayProcess;
+    if (process.platform === 'win32') {
+      child = spawn(
+        process.execPath,
+        [...gatewayExecArgv, openclawEntry, ...forkArgs],
+        {
+          cwd: runtime.root,
+          env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        },
+      );
+    } else {
+      child = utilityProcess.fork(
+        openclawEntry,
+        forkArgs,
+        {
+          cwd: runtime.root,
+          execArgv: gatewayExecArgv,
+          env,
+          stdio: 'pipe',
+          serviceName: 'OpenClaw Gateway',
+        },
+      );
+    }
+    console.log(`[OpenClaw] startGateway: gateway process created (${elapsed()}), platform=${process.platform}, launcher=${process.platform === 'win32' ? 'spawn' : 'utilityProcess'}`);
 
     this.gatewayProcess = child;
     this.gatewaySpawnedAt = Date.now();
