@@ -845,6 +845,92 @@ export const LogReporterActionPrefix = {
   - 会上传模型 ID/名称、provider、cron 表达式、通知渠道/platform、模板 ID/名称、payload 长度、计划时间和任务状态摘要，用于分析定时任务功能使用偏好。
   - 历史页只记录筛选和是否查看关联会话，不上传运行记录 ID、任务名或会话标识。
 
+#### 2.4.29 `lobsterai_prompt_submit`
+
+- 状态：已实现。
+- 触发时机：用户从首页初始输入框或历史对话输入框成功发起一次任务/继续对话后发送。发送前被拦截、模型权限弹窗、附件校验失败、父层提交返回 `false` 时不发送本事件，而发送 `lobsterai_prompt_control_action` 的 `submit_blocked`。
+- 事件含义：统计核心 prompt 提交漏斗，区分新建任务和历史对话续聊。
+- 业务参数：
+  - `surface`：string，输入框所在场景。当前取值为 `home` 或 `conversation`。
+  - `conversationState`：string，对话状态。当前取值为 `new_task` 或 `continue_session`。
+  - `submitMethod`：string，提交方式。当前取值包括 `button`、`keyboard`、`voice`。
+  - `promptLength`：number，用户输入正文长度。不包含自动拼接的本地附件路径。
+  - `promptLineCount`：number，用户输入正文行数。
+  - `hasPrompt`：boolean，是否存在文本输入。
+  - `attachmentCount`：number，提交时附件数量。
+  - `imageAttachmentCount`：number，提交时图片附件数量。
+  - `fileTypeGroups`：string，附件类型分组，以英文逗号连接。当前取值包括 `image`、`pdf`、`office`、`archive`、`code`、`other`。
+  - `totalAttachmentSizeBucket`：string，附件总大小分桶。无法获得大小时不发送。
+  - `activeSkillCount`：number，提交时主动选择的技能数量。
+  - `activeSkillIds` / `activeSkillNames`：string，提交时主动选择的技能 ID/名称列表，以英文逗号连接。
+  - `activeKitCount`：number，提交时主动选择的专家套件数量。
+  - `activeKitIds` / `activeKitNames`：string，提交时主动选择的专家套件 ID/名称列表，以英文逗号连接。
+  - `modelId` / `modelName`：string，提交时使用的模型 ID/名称。
+  - `modelSource`：string，模型来源分类。当前取值为 `package` 或 `custom`。
+  - `providerKey` / `provider`：string，模型所属 provider。
+  - `isServerModel`：boolean，是否为套餐/服务端模型。
+  - `agentId`：string，当前 Agent ID。
+  - `isMainAgent`：boolean，是否为主 Agent。
+  - `agentSource`：string，Agent 来源。当前取值为 `custom` 或 `preset`。
+  - `agentSkillCount`：number，当前 Agent 配置的技能数量。
+  - `isPlanMode`：boolean，提交时是否处于计划模式。
+  - `hasWorkingDirectory`：boolean，提交时是否存在工作目录。
+  - `hasSession`：boolean，是否为历史对话续聊。
+  - `sessionMessageCountBucket`：string，历史对话消息数量分桶。当前取值包括 `0`、`1_3`、`4_10`、`11_30`、`30_plus`。
+  - `sessionAgeBucket`：string，历史对话创建时间距当前时间分桶。当前取值包括 `same_day`、`1_3_days`、`3_7_days`、`7_days_plus`。
+  - `mediaReferenceCount`：number，prompt 中引用媒体生成结果的数量。
+  - `selectedTextSnippetCount`：number，提交时携带的选中文本片段数量。
+  - `effectiveCollaborationMode`：string，实际提交给 Cowork 的协作模式。
+- 隐私边界：
+  - 不上传 prompt 正文、自动拼接的附件路径、文件名、图片/音频内容、选中文本片段内容或历史消息内容。
+  - 会上传技能/专家套件/模型 ID 和名称、Agent ID、数量和分桶信息，用于分析用户在不同场景下的能力选择和提交转化。
+
+#### 2.4.30 `lobsterai_prompt_control_action`
+
+- 状态：已实现。
+- 触发时机：用户操作输入框附近控件或提交前被阻断时发送。
+- 事件含义：统计输入框周边能力入口使用情况，覆盖首页初始状态和历史对话续聊状态。
+- 业务参数：
+  - `surface`：string，输入框所在场景。当前取值为 `home` 或 `conversation`。
+  - `conversationState`：string，对话状态。当前取值为 `new_task` 或 `continue_session`。
+  - `controlType`：string，控件动作类型。当前取值包括 `input_focus`、`draft_started`、`submit_blocked`、`add_menu_open`、`add_menu_close`、`attach_file_click`、`attachment_add_success`、`attachment_add_failed`、`attachment_add_cancelled`、`attachment_add_blocked`、`attachment_remove`、`skill_menu_open`、`skill_toggle`、`manage_skills_click`、`kit_menu_open`、`kit_menu_close`、`kit_toggle`、`manage_kits_click`、`plan_mode_enabled`、`plan_mode_disabled`、`agent_selector_open`、`agent_selector_close`、`agent_selected`、`working_directory_selector_open`、`working_directory_selector_close`、`working_directory_selected`、`working_directory_open`、`voice_record_start`、`voice_record_stop`、`voice_record_blocked`、`stop_streaming`。
+  - `blockedReason`：string，阻断原因。当前取值包括 `working_directory_required`、`voice_recognition_failed`、`streaming`、`empty`、`disabled`、`model_patching`、`model_access_required`、`image_attachment_too_large`、`image_preview_failed`、`submit_rejected`、`quota_exhausted`、`login_required`、`voice_input_active`、`adding_file`。
+  - `source` / `entry`：string，控件来源，例如 `picker`、`paste`、`drop`、`prompt_tools_menu`、`active_context_badge`、`home_context`、`conversation_context`。
+  - `agentId`、`isMainAgent`、`hasWorkingDirectory`、`isPlanMode`：当前输入框上下文。
+  - `skillId` / `skillName` / `skillSource` / `targetEnabled`：技能选择或取消选择时发送。
+  - `kitId` / `kitName` / `kitSource` / `isInstalled` / `skillCount` / `mcpServerCount` / `connectorCount`：专家套件选择或取消选择时发送。
+  - `targetAgentId` / `targetIsMainAgent` / `targetAgentSource` / `targetAgentSkillCount` / `hasAgentModel` / `agentModelId`：切换 Agent 时发送。
+  - `attachmentCount` / `imageAttachmentCount` / `fileTypeGroups` / `totalAttachmentSizeBucket` / `selectedFileCount` / `modelSupportsImage` / `hasImageWithoutVision`：附件相关动作发送。
+  - `submitMethod` / `accessPrompt`：提交阻断时发送。
+  - `asrQuotaStatus` / `isAsrSubscribed` / `recordingElapsedSeconds`：语音输入相关动作发送。
+- 隐私边界：
+  - 不上传文件路径、文件名、文件内容、工作目录真实路径、Agent 名称、Agent system prompt/identity/userInfo、语音识别文本或错误详情。
+  - 会上传技能/专家套件 ID 和名称、模型/Agent 结构化上下文、附件类型分组和数量，用于分析输入框周边控件使用率和阻断原因。
+
+#### 2.4.31 `lobsterai_prompt_template_action`
+
+- 状态：已实现。
+- 触发时机：用户在首页初始状态下点击输入框下方的 prompt 模板入口（例如「制作幻灯片」「数据分析」「教育学习」「创建网站」）或点击具体模板 prompt 时发送。
+- 事件含义：统计首页 prompt 模板入口点击、模板 prompt 点击和对应技能自动启用情况。
+- 业务参数：
+  - `surface`：string，当前固定为 `home`。
+  - `conversationState`：string，当前固定为 `new_task`。
+  - `templateActionType`：string，模板动作类型。当前取值为 `template_card_click` 或 `template_prompt_click`。
+  - `templateId` / `templateName`：string，模板入口 ID/展示名称。
+  - `templateIndex`：number，模板入口在首页推荐列表中的序号。
+  - `mappedSkillId` / `mappedSkillName`：string，模板入口映射的技能 ID/名称。
+  - `promptId` / `promptName`：string，用户点击的具体模板 prompt ID/展示名称。
+  - `promptIndex`：number，具体模板 prompt 在该模板入口中的序号。
+  - `promptLength`：number，模板 prompt 正文长度。
+  - `hasAutoEnabledSkill`：boolean，点击模板入口后是否找到并自动启用对应技能。
+  - `promptCount`：number，模板入口包含的 prompt 数量。
+  - `modelId` / `modelName`：string，点击模板时当前模型 ID/名称。
+  - `agentId` / `isMainAgent`：当前 Agent 上下文。
+  - `isPlanMode`：boolean，点击模板时首页输入框是否处于计划模式。
+- 隐私边界：
+  - 不上传模板 prompt 完整正文，仅上传模板 ID、展示名称、prompt ID/名称、长度和映射技能信息。
+  - 这些字段用于分析首页模板入口点击率、具体模板偏好、模板到技能选择的转化情况。
+
 ### 2.5 请求流程
 
 ```text

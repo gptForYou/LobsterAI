@@ -1,6 +1,6 @@
 import { ShieldCheckIcon } from '@heroicons/react/24/outline';
-import React, { useCallback, useEffect, useRef,useState } from 'react';
-import { useDispatch,useSelector } from 'react-redux';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 
 import { buildSessionTitleFromInput } from '../../../common/sessionTitle';
 import { buildCoworkImageAttachmentPreviews } from '../../../shared/cowork/imageAttachments';
@@ -28,13 +28,14 @@ import type { MediaAttachmentRef } from '../../types/mediaGeneration';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
 import ComposeIcon from '../icons/ComposeIcon';
 import SidebarToggleIcon from '../icons/SidebarToggleIcon';
-import { PromptPanel,QuickActionBar } from '../quick-actions';
+import { PromptPanel, QuickActionBar } from '../quick-actions';
 import type { SettingsOpenOptions } from '../Settings';
 import WindowTitleBar from '../window/WindowTitleBar';
 import { useAgentSelectedModel } from './agentModelSelection';
 import { CoworkUiEvent } from './constants';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import CoworkSessionDetail from './CoworkSessionDetail';
+import { reportPromptTemplateAction } from './promptAnalytics';
 import { buildCoworkContinuationSystemPrompt, buildCoworkSystemPrompt } from './skillSystemPrompt';
 import SubagentSessionDetail from './SubagentSessionDetail';
 
@@ -106,6 +107,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   const currentAgent = agents.find((agent) => agent.id === currentAgentId);
   const currentAgentWorkingDirectory = currentAgent?.workingDirectory?.trim() || config.workingDirectory || '';
   const currentAgentSelectedModel = useAgentSelectedModel(currentAgentId, currentAgent?.model ?? '');
+  const homeDraftCollaborationMode = useSelector((state: RootState) => (
+    state.cowork.draftCollaborationModes.__home__ || CoworkCollaborationMode.Default
+  ));
   const mediaSelection = useSelector((state: RootState) => {
     const key = currentSession?.id || '__home__';
     return state.cowork.mediaSelection[key];
@@ -537,6 +541,24 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
     const action = quickActions.find(a => a.id === actionId);
     if (action) {
       const targetSkill = skills.find(s => s.id === action.skillMapping);
+      console.debug(`[CoworkView] reporting prompt template analytics: template_card_click ${action.id}`);
+      reportPromptTemplateAction({
+        templateActionType: 'template_card_click',
+        templateId: action.id,
+        templateName: action.label,
+        templateIndex: quickActions.findIndex(item => item.id === action.id),
+        mappedSkillId: action.skillMapping,
+        mappedSkillName: targetSkill?.name,
+        hasAutoEnabledSkill: Boolean(targetSkill),
+        params: {
+          promptCount: action.prompts.length,
+          modelId: currentAgentSelectedModel?.id,
+          modelName: currentAgentSelectedModel?.name,
+          agentId: currentAgentId,
+          isMainAgent: currentAgentId === 'main',
+          isPlanMode: homeDraftCollaborationMode === CoworkCollaborationMode.Plan,
+        },
+      });
       if (targetSkill) {
         dispatch(setActiveSkillIds([targetSkill.id]));
       }
@@ -556,7 +578,32 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
   }, [activeSkillIds, dispatch, quickActions, selectedActionId]);
 
   // Handle prompt selection from QuickAction
-  const handleQuickActionPromptSelect = (prompt: string) => {
+  const handleQuickActionPromptSelect = (prompt: string, promptId?: string) => {
+    if (selectedAction) {
+      const selectedPrompt = selectedAction.prompts.find(item => item.id === promptId);
+      const targetSkill = skills.find(skill => skill.id === selectedAction.skillMapping);
+      console.debug(`[CoworkView] reporting prompt template analytics: template_prompt_click ${selectedAction.id}/${promptId ?? 'unknown'}`);
+      reportPromptTemplateAction({
+        templateActionType: 'template_prompt_click',
+        templateId: selectedAction.id,
+        templateName: selectedAction.label,
+        templateIndex: quickActions.findIndex(item => item.id === selectedAction.id),
+        mappedSkillId: selectedAction.skillMapping,
+        mappedSkillName: targetSkill?.name,
+        promptId,
+        promptName: selectedPrompt?.label,
+        promptIndex: selectedAction.prompts.findIndex(item => item.id === promptId),
+        promptLength: prompt.length,
+        hasAutoEnabledSkill: activeSkillIds.includes(selectedAction.skillMapping),
+        params: {
+          modelId: currentAgentSelectedModel?.id,
+          modelName: currentAgentSelectedModel?.name,
+          agentId: currentAgentId,
+          isMainAgent: currentAgentId === 'main',
+          isPlanMode: homeDraftCollaborationMode === CoworkCollaborationMode.Plan,
+        },
+      });
+    }
     // Fill the prompt into input
     promptInputRef.current?.setValue(prompt);
     promptInputRef.current?.focus();
