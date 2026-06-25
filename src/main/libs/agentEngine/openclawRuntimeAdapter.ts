@@ -51,7 +51,6 @@ import {
 import {
   extractGatewayHistoryEntries,
   extractGatewayMessageText,
-  extractGatewayMessageThinking,
   isHeartbeatAckText,
   isPreCompactionMemoryFlushPromptText,
   isSilentReplyPrefixText,
@@ -61,6 +60,13 @@ import {
   stripTrailingSilentReplyToken,
 } from '../openclawHistory';
 import { buildOpenClawLocalTimeContextPrompt } from '../openclawLocalTimeContextPrompt';
+import {
+  extractThinkingFromCurrentTurn,
+  findMatchingThinkingMessageIdInCurrentTurn,
+  findRedundantFinalPrefixMessageId,
+  findReusableCommittedAssistantMessageId,
+  findReusableFinalAssistantMessageId,
+} from './assistantMessageReconciliation';
 import { AgentLifecyclePhase, type AgentLifecyclePhase as AgentLifecyclePhaseValue } from './constants';
 import {
   buildCoworkContinuityCapsule,
@@ -429,6 +435,8 @@ type ActiveTurn = {
   knownRunIds: Set<string>;
   assistantMessageId: string | null;
   committedAssistantText: string;
+  /** Last visible assistant segment finalized before a tool call. */
+  lastCommittedAssistantMessageId?: string | null;
   currentAssistantSegmentText: string;
   currentText: string;
   /** Highest text length from agent assistant events (immune to chat delta noise). */
@@ -571,6 +579,8 @@ const PLAN_MODE_SAFE_GIT_COMMANDS = new Set([
   'show',
   'status',
 ]);
+const ASSISTANT_STREAM_RESET_MIN_DROP_CHARS = 40;
+const ASSISTANT_STREAM_RESET_RATIO = 0.7;
 
 function isPlanModeSystemPrompt(systemPrompt: string): boolean {
   return containsPlanModePrompt(systemPrompt)
@@ -767,6 +777,13 @@ export function isPlanModeResponseComplete(text: string): boolean {
   ];
   const sectionCount = sectionPatterns.filter((pattern) => pattern.test(content)).length;
   return structuralLineCount >= 8 || (structuralLineCount >= 5 && sectionCount >= 3);
+}
+
+export function isSignificantAssistantStreamReset(previousLength: number, nextLength: number): boolean {
+  if (previousLength <= 5 || nextLength >= previousLength) return false;
+  const drop = previousLength - nextLength;
+  return drop >= ASSISTANT_STREAM_RESET_MIN_DROP_CHARS
+    && nextLength <= previousLength * ASSISTANT_STREAM_RESET_RATIO;
 }
 
 function buildPlanModeOutboundReminder(): string {
@@ -3851,6 +3868,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       knownRunIds: new Set([runId]),
       assistantMessageId: null,
       committedAssistantText: '',
+      lastCommittedAssistantMessageId: null,
       currentAssistantSegmentText: '',
       currentText: '',
       agentAssistantTextLength: 0,
@@ -5137,6 +5155,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
 
+    if (stream === 'lifecycle'
+      && (lifecyclePhase === AgentLifecyclePhase.End || lifecyclePhase === AgentLifecyclePhase.Error)
+      && sessionKey
+      && this.subagentTracker.tryMarkTerminalFromSessionKey(
+        sessionKey,
+        lifecyclePhase === AgentLifecyclePhase.Error ? 'error' : 'done',
+      )) {
+      return;
+    }
+
     const sessionIdByRunId = runId ? this.sessionIdByRunId.get(runId) : undefined;
     const sessionIdBySessionKey = sessionKey ? this.resolveSessionIdBySessionKey(sessionKey) ?? undefined : undefined;
     let sessionId = reopenedSessionId ?? sessionIdByRunId ?? sessionIdBySessionKey;
@@ -5181,6 +5209,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
 
     if (!sessionId) {
+      if (stream === 'lifecycle'
+        && (lifecyclePhase === AgentLifecyclePhase.End || lifecyclePhase === AgentLifecyclePhase.Error)) {
+        console.warn(
+          '[OpenClawRuntime] dropping terminal agent lifecycle event because no sessionId resolved',
+          `phase=${lifecyclePhase}`,
+          `runId=${runId || 'unknown'}`,
+          `sessionKey=${sessionKey || 'unknown'}`,
+        );
+      }
       console.log('[Debug:handleAgentEvent] no sessionId, dropping event. runId:', runId, 'sessionKey:', sessionKey);
       if (runId) {
         this.enqueuePendingAgentEvent(runId, agentPayload, seq);
@@ -5194,6 +5231,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const turn = this.activeTurns.get(sessionId);
     if (!turn) {
+      if (stream === 'lifecycle'
+        && (lifecyclePhase === AgentLifecyclePhase.End || lifecyclePhase === AgentLifecyclePhase.Error)) {
+        console.warn(
+          '[OpenClawRuntime] dropping terminal agent lifecycle event because no active turn exists',
+          `phase=${lifecyclePhase}`,
+          `sessionId=${sessionId}`,
+          `runId=${runId || 'unknown'}`,
+          `sessionKey=${sessionKey || 'unknown'}`,
+        );
+      }
       console.log('[Debug:handleAgentEvent] no active turn for sessionId:', sessionId);
       return;
     }
@@ -5472,38 +5519,69 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   }
 
   private reuseFinalAssistantMessage(sessionId: string, content: string): string | null {
-    const normalizedContent = content.trim();
-    if (!normalizedContent) {
+    const session = this.store.getSession(sessionId);
+    const messages = session?.messages ?? [];
+    const messageId = findReusableFinalAssistantMessageId(messages, content);
+    if (!messageId) {
       return null;
     }
 
+    this.store.updateMessage(sessionId, messageId, {
+      content,
+      metadata: {
+        isStreaming: false,
+        isFinal: true,
+      },
+    });
+    return messageId;
+  }
+
+  private reuseCommittedAssistantMessage(
+    sessionId: string,
+    turn: ActiveTurn,
+    content: string,
+  ): string | null {
+    const session = this.store.getSession(sessionId);
+    const messageId = findReusableCommittedAssistantMessageId(
+      session?.messages ?? [],
+      turn.lastCommittedAssistantMessageId,
+      content,
+    );
+    if (!messageId) {
+      return null;
+    }
+
+    const finalMetadata = {
+      isStreaming: false,
+      isFinal: true,
+    };
+    this.store.updateMessage(sessionId, messageId, {
+      content,
+      metadata: finalMetadata,
+    });
+    this.emit('messageUpdate', sessionId, messageId, content, finalMetadata);
+    return messageId;
+  }
+
+  private removeRedundantFinalPrefixSegment(
+    sessionId: string,
+    finalMessageId: string | null | undefined,
+    finalText: string,
+  ): void {
     const session = this.store.getSession(sessionId);
     const messages = session?.messages ?? [];
-    // Scan backward: in normal flow the assistant message is last; after a skill switch
-    // one user message may sit between the previous assistant reply and this sync (Bug 2).
-    // Allow at most one non-assistant message before giving up.
-    let nonAssistantCount = 0;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.type === 'assistant') {
-        if (msg.content.trim() !== normalizedContent) {
-          return null;
-        }
-        this.store.updateMessage(sessionId, msg.id, {
-          content,
-          metadata: {
-            isStreaming: false,
-            isFinal: true,
-          },
-        });
-        return msg.id;
-      }
-      nonAssistantCount++;
-      if (nonAssistantCount > 1) {
-        return null;
-      }
+    const redundantMessageId = findRedundantFinalPrefixMessageId(messages, finalMessageId, finalText);
+    if (!redundantMessageId) {
+      return;
     }
-    return null;
+
+    console.debug(
+      '[OpenClawRuntime] removing redundant assistant prefix segment before final.',
+      `sessionId=${sessionId}`,
+      `messageId=${redundantMessageId}`,
+      `finalMessageId=${finalMessageId ?? 'pending'}`,
+    );
+    this.deleteAssistantMessage(sessionId, redundantMessageId);
   }
 
   private resolveAssistantMessageIdForUsage(sessionId: string, preferredMessageId?: string | null): string | undefined {
@@ -6167,6 +6245,24 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const sessionId = this.resolveSessionIdFromChatPayload(chatPayload);
     if (!sessionId) {
+      const sessionKey = typeof chatPayload.sessionKey === 'string' ? chatPayload.sessionKey.trim() : '';
+      if ((state === 'final' || state === 'aborted' || state === 'error')
+        && sessionKey
+        && this.subagentTracker.tryMarkTerminalFromSessionKey(
+          sessionKey,
+          state === 'final' ? 'done' : 'error',
+        )) {
+        return;
+      }
+      if (state === 'final' || state === 'aborted' || state === 'error') {
+        console.warn(
+          '[OpenClawRuntime] dropping terminal chat event because no sessionId resolved',
+          `state=${state}`,
+          `runId=${runId || 'unknown'}`,
+          `sessionKey=${typeof chatPayload.sessionKey === 'string' ? chatPayload.sessionKey : 'unknown'}`,
+          `message=${summarizeGatewayMessageShape(chatPayload.message)}`,
+        );
+      }
       console.debug('[OpenClawRuntime] handleChatEvent — no sessionId resolved, dropping event');
       return;
     }
@@ -6441,8 +6537,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     // Detect text reset: new model call starts → text length drops significantly.
     // Only trigger when hwm is meaningful (> 5 chars) to avoid false positives
     // from early chat delta / agent event interleaving.
-    if (text.length < turn.agentAssistantTextLength
-        && turn.agentAssistantTextLength > 5
+    if (isSignificantAssistantStreamReset(turn.agentAssistantTextLength, text.length)
         && turn.assistantMessageId) {
       console.debug('[Debug:textReset] detected:', turn.agentAssistantTextLength, '->',
         text.length, 'splitting. prevText:', turn.currentText.slice(0, 80));
@@ -6483,30 +6578,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
   }
 
-  private extractThinkingFromCurrentTurn(messages: unknown[]): string {
-    let lastUserIdx = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (isRecord(msg) && (msg as Record<string, unknown>).role === 'user') {
-        lastUserIdx = i;
-        break;
-      }
-    }
-    const startIdx = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
-    const thinkingParts: string[] = [];
-    for (let i = startIdx; i < messages.length; i++) {
-      const msg = messages[i];
-      if (!isRecord(msg)) continue;
-      const role = typeof msg.role === 'string' ? msg.role.trim().toLowerCase() : '';
-      if (role !== 'assistant') continue;
-      const thinking = extractGatewayMessageThinking(msg);
-      if (thinking) {
-        thinkingParts.push(thinking);
-      }
-    }
-    return thinkingParts.join('\n\n').trim();
-  }
-
   private syncThinkingMessage(sessionId: string, turn: ActiveTurn): void {
     const thinkingText = turn.currentThinkingText;
     if (!thinkingText) return;
@@ -6537,6 +6608,24 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.throttledStoreUpdateMessage(sessionId, turn.thinkingMessageId,
       thinkingText, { isThinking: true, isStreaming: true, isFinal: false });
     this.throttledEmitMessageUpdate(sessionId, turn.thinkingMessageId, thinkingText);
+  }
+
+  private reuseFinalThinkingMessage(sessionId: string, turn: ActiveTurn): boolean {
+    const thinkingText = turn.currentThinkingText;
+    if (!thinkingText) return false;
+    const session = this.store.getSession(sessionId);
+    const messageId = findMatchingThinkingMessageIdInCurrentTurn(session?.messages ?? [], thinkingText);
+    if (!messageId) return false;
+
+    const finalMetadata = { isThinking: true, isStreaming: false, isFinal: true };
+    this.store.updateMessage(sessionId, messageId, {
+      content: thinkingText,
+      metadata: finalMetadata,
+    });
+    this.emit('messageUpdate', sessionId, messageId, thinkingText, finalMetadata);
+    turn.thinkingMessageId = null;
+    turn.currentThinkingText = '';
+    return true;
   }
 
   private finalizeThinkingMessage(sessionId: string, turn: ActiveTurn): void {
@@ -6576,6 +6665,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     if (storeContent) {
       turn.committedAssistantText = `${turn.committedAssistantText}${storeContent}`;
+      turn.lastCommittedAssistantMessageId = messageId;
     }
 
     const finalMetadata = { isStreaming: false, isFinal: true };
@@ -8031,11 +8121,13 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }
 
       // Extract thinking from history messages and sync thinking message
-      const thinkingFromHistory = this.extractThinkingFromCurrentTurn(historyMessages);
+      const thinkingFromHistory = extractThinkingFromCurrentTurn(historyMessages);
       if (thinkingFromHistory && thinkingFromHistory !== turn.currentThinkingText) {
         turn.currentThinkingText = thinkingFromHistory;
-        this.syncThinkingMessage(sessionId, turn);
-        this.finalizeThinkingMessage(sessionId, turn);
+        if (!this.reuseFinalThinkingMessage(sessionId, turn)) {
+          this.syncThinkingMessage(sessionId, turn);
+          this.finalizeThinkingMessage(sessionId, turn);
+        }
       }
 
       // For channel sessions, append file paths from "message" tool calls as clickable links
@@ -8076,7 +8168,17 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         return;
       }
 
+      if (!turn.planMode) {
+        this.removeRedundantFinalPrefixSegment(sessionId, turn.assistantMessageId, canonicalSegmentText);
+      }
+
       if (!turn.assistantMessageId) {
+        const committedMessageId = this.reuseCommittedAssistantMessage(sessionId, turn, canonicalSegmentText);
+        if (committedMessageId) {
+          turn.assistantMessageId = committedMessageId;
+          return;
+        }
+
         const reusedMessageId = this.reuseFinalAssistantMessage(sessionId, canonicalSegmentText);
         if (reusedMessageId) {
           turn.assistantMessageId = reusedMessageId;

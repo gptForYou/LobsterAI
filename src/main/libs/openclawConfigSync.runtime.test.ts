@@ -1244,7 +1244,12 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.plugins.entries['openclaw-lark']).toEqual({ enabled: true });
     expect(config.plugins.entries).not.toHaveProperty('feishu');
     expect(config.plugins.entries.qqbot).toEqual({ enabled: true });
+    expect(config.plugins.entries.discord).toEqual({ enabled: false });
+    expect(config.plugins.entries.browser).toEqual({ enabled: true });
     expect(config.plugins.entries).not.toHaveProperty('openclaw-qqbot');
+    expect(config.plugins.allow).toContain('browser');
+    expect(config.plugins.allow).toContain('qqbot');
+    expect(config.plugins.allow).toContain('discord');
   });
 
   test('writes plugin entries using manifest ids and removes stale package ids', async () => {
@@ -1321,6 +1326,51 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.plugins.entries).not.toHaveProperty('openclaw-nim-channel');
     expect(config.plugins.entries.email).toEqual({ enabled: true });
     expect(config.plugins.entries['nimsuite-openclaw-nim-channel']).toEqual({ enabled: true });
+  });
+
+  test('writes NIM env vars with the same indexes as enabled channel accounts', async () => {
+    const sync = await createSync({
+      getNimInstances: () => [
+        {
+          instanceId: 'nim-disabled',
+          instanceName: 'NIM Disabled',
+          enabled: false,
+          appKey: 'disabled-app',
+          account: 'disabled-account',
+          token: 'disabled-token',
+        },
+        {
+          instanceId: 'nim-packed',
+          instanceName: 'NIM Packed',
+          enabled: true,
+          nimToken: 'packed-app|packed-account|packed-token',
+        },
+        {
+          instanceId: 'nim-work',
+          instanceName: 'NIM Work',
+          enabled: true,
+          appKey: 'work-app',
+          account: 'work-account',
+          token: 'work-token',
+        },
+      ],
+    });
+
+    const result = sync.sync('nim-secret-env-indexes');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.channels.nim.accounts).not.toHaveProperty('nim-disa');
+    expect(config.channels.nim.accounts['nim-pack'].nimToken).toBe(
+      'packed-app|packed-account|packed-token',
+    );
+    expect(config.channels.nim.accounts['nim-work'].nimToken).toBe(
+      'work-app|work-account|${LOBSTER_NIM_TOKEN_1}',
+    );
+
+    const env = sync.collectSecretEnvVars();
+    expect(env).not.toHaveProperty('LOBSTER_NIM_TOKEN');
+    expect(env.LOBSTER_NIM_TOKEN_1).toBe('work-token');
   });
 
   test('writes weixin channel config using dmPolicy and allowFrom instead of unsupported accountId', async () => {

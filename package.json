@@ -22,6 +22,16 @@
         "version": "2026.6.10"
       },
       {
+        "id": "qqbot",
+        "npm": "@openclaw/qqbot",
+        "version": "2026.6.1"
+      },
+      {
+        "id": "discord",
+        "npm": "@openclaw/discord",
+        "version": "2026.6.1"
+      },
+      {
         "id": "wecom-openclaw-plugin",
         "npm": "@wecom/wecom-openclaw-plugin",
         "version": "2026.5.25"

@@ -24,6 +24,7 @@ import {
   estimateOpenClawChatSendFrameBytes,
   isPlanModeResponseComplete,
   isPlanModeSafeExecCommand,
+  isSignificantAssistantStreamReset,
   normalizeOpenClawRuntimeErrorMessage,
   OPENCLAW_CHAT_SEND_PAYLOAD_SAFE_LIMIT_BYTES,
   OpenClawRuntimeAdapter,
@@ -91,6 +92,59 @@ test('plan mode rejects a preface and accepts a structured implementation plan',
 - 默认交付单文件静态页面，产品图片、地址和电话先使用易替换占位内容。
 </proposed_plan>`;
   expect(isPlanModeResponseComplete(completePlan)).toBe(true);
+});
+
+test('assistant snapshot jitter does not count as a stream reset', () => {
+  expect(isSignificantAssistantStreamReset(545, 544)).toBe(false);
+  expect(isSignificantAssistantStreamReset(1000, 930)).toBe(false);
+  expect(isSignificantAssistantStreamReset(1000, 200)).toBe(true);
+  expect(isSignificantAssistantStreamReset(80, 30)).toBe(true);
+});
+
+test('plan mode assistant snapshot jitter keeps one visible plan message', () => {
+  const firstSnapshot = [
+    '<proposed_plan>',
+    '**Summary**',
+    '',
+    '根据产品图为小红书平台撰写宣传文案。',
+    '',
+    '**Implementation Approach**',
+    '1. 分析图片视觉元素与产品信息。',
+    '2. 规划文案结构、卖点和禁用风险。',
+    '</proposed_plan>',
+    '',
+  ].join('\n');
+  const nextSnapshot = firstSnapshot.trim();
+  expect(nextSnapshot.length).toBeLessThan(firstSnapshot.length);
+
+  const { session, store } = createReconcileStore([
+    { id: 'msg-1', type: 'user', content: '帮我写小红书文案', timestamp: 1, metadata: {} },
+  ]);
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  const sessionKey = `agent:main:lobsterai:${session.id}`;
+  const turn = createActiveTurn(session.id, sessionKey, 'run-plan-snapshot');
+  turn.planMode = true;
+  adapter.activeTurns.set(session.id, turn);
+  adapter.sessionIdByRunId.set('run-plan-snapshot', session.id);
+
+  adapter.processAgentAssistantText({
+    runId: 'run-plan-snapshot',
+    sessionKey,
+    stream: 'assistant',
+    data: { text: firstSnapshot },
+  });
+  const firstMessageId = turn.assistantMessageId;
+  adapter.processAgentAssistantText({
+    runId: 'run-plan-snapshot',
+    sessionKey,
+    stream: 'assistant',
+    data: { text: nextSnapshot },
+  });
+
+  const assistantMessages = session.messages.filter((message) => message.type === 'assistant');
+  expect(assistantMessages).toHaveLength(1);
+  expect(turn.assistantMessageId).toBe(firstMessageId);
+  expect(turn.committedAssistantText).toBe('');
 });
 
 test('pickPersistedAssistantSegment: stream authority keeps previous when same length or longer', () => {
@@ -1645,7 +1699,12 @@ function createReconcileStore(
           });
         }
       },
-      deleteMessage: () => true,
+      deleteMessage: (sessionId: string, messageId: string) => {
+        expect(sessionId).toBe(session.id);
+        const before = session.messages.length;
+        session.messages = session.messages.filter((message) => message.id !== messageId);
+        return session.messages.length < before;
+      },
     },
   };
 }
@@ -1661,6 +1720,7 @@ function createActiveTurn(sessionId: string, sessionKey: string, runId: string) 
     knownRunIds: new Set([runId]),
     assistantMessageId: undefined,
     committedAssistantText: '',
+    lastCommittedAssistantMessageId: null,
     currentAssistantSegmentText: '',
     currentText: '',
     agentAssistantTextLength: 0,
@@ -2645,6 +2705,227 @@ test('chat final repairs last segment with corrupted committed text from tool ca
 
     expect(session.messages.find((message) => message.id === 'msg-5')?.content).toBe(canonicalLastSegment);
     expect(session.messages.find((message) => message.id === 'msg-2')?.content).toBe(committedSegment);
+
+    await vi.advanceTimersByTimeAsync(800);
+    expect(session.status).toBe('completed');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('chat final reuses committed assistant segment after sessions_yield history sync', async () => {
+  vi.useFakeTimers();
+  try {
+    const startupText = [
+      '已启动两个 subagent：',
+      '',
+      '1. **random-stats** — 生成100个随机数并统计平均值/最大值/最小值，写入 `random_stats.txt`',
+      '2. **fun-facts** — 写3条编程冷知识到 `fun_facts.txt`',
+      '',
+      '两个都在跑，完成后会自动通知我。稍等结果',
+    ].join('\n');
+    const { session, store } = createReconcileStore([
+      { id: 'msg-1', type: 'user', content: '起两个subagent 随便做点什么，用于测试', timestamp: 1, metadata: {} },
+      { id: 'msg-2', type: 'assistant', content: startupText, timestamp: 2, metadata: { isStreaming: false, isFinal: true } },
+      { id: 'msg-3', type: 'tool_use', content: 'Using tool: sessions_yield', timestamp: 3, metadata: { toolUseId: 'call-yield', toolName: 'sessions_yield' } },
+      { id: 'msg-4', type: 'tool_result', content: '{"status":"yielded"}', timestamp: 4, metadata: { toolUseId: 'call-yield' } },
+    ]);
+
+    const adapter = new OpenClawRuntimeAdapter(store, {});
+    const sessionKey = `agent:main:lobsterai:${session.id}`;
+    adapter.gatewayClient = {
+      start: () => {},
+      stop: () => {},
+      request: async () => ({
+        messages: [
+          { role: 'user', content: '起两个subagent 随便做点什么，用于测试' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'Need to spawn two subagents.' },
+              { type: 'toolCall', id: 'call-spawn-1', name: 'sessions_spawn', arguments: {} },
+              { type: 'toolCall', id: 'call-spawn-2', name: 'sessions_spawn', arguments: {} },
+            ],
+          },
+          { role: 'toolResult', toolCallId: 'call-spawn-1', content: 'accepted' },
+          { role: 'toolResult', toolCallId: 'call-spawn-2', content: 'accepted' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: startupText },
+              { type: 'toolCall', id: 'call-yield', name: 'sessions_yield', arguments: { message: 'wait' } },
+            ],
+          },
+          { role: 'toolResult', toolCallId: 'call-yield', content: '{"status":"yielded"}' },
+        ],
+      }),
+    };
+
+    const turn = createActiveTurn(session.id, sessionKey, 'run-yield-final');
+    turn.assistantMessageId = null;
+    turn.committedAssistantText = startupText;
+    turn.lastCommittedAssistantMessageId = 'msg-2';
+    turn.currentText = startupText;
+    turn.currentContentText = startupText;
+    turn.currentContentBlocks = [startupText];
+    turn.toolUseMessageIdByToolCallId.set('call-yield', 'msg-3');
+    turn.toolResultMessageIdByToolCallId.set('call-yield', 'msg-4');
+    adapter.activeTurns.set(session.id, turn);
+    adapter.latestTurnTokenBySession.set(session.id, turn.turnToken);
+
+    adapter.handleChatEvent({
+      state: 'final',
+      runId: 'run-yield-final',
+      sessionKey,
+      message: { role: 'assistant', content: startupText },
+    }, 1);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const visibleStartupMessages = session.messages.filter((message) => (
+      message.type === 'assistant'
+      && message.metadata?.isThinking !== true
+      && message.content === startupText
+    ));
+    expect(visibleStartupMessages.map((message) => message.id)).toEqual(['msg-2']);
+    expect(turn.assistantMessageId).toBe('msg-2');
+    expect(session.messages.filter((message) => message.metadata?.isThinking === true)).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(800);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('chat final reuses identical finalized thinking from the current turn', async () => {
+  vi.useFakeTimers();
+  try {
+    const thinkingText = 'The user wants me to spawn two subagents to test. Let me do that.';
+    const finalText = 'fibonacci 也完成了。两个 subagent 测试都正常完成。';
+    const { session, store } = createReconcileStore([
+      { id: 'msg-1', type: 'user', content: '起两个subagent 随便做点什么，用于测试', timestamp: 1, metadata: {} },
+      {
+        id: 'msg-2',
+        type: 'assistant',
+        content: thinkingText,
+        timestamp: 2,
+        metadata: { isThinking: true, isStreaming: false, isFinal: true },
+      },
+      {
+        id: 'msg-3',
+        type: 'assistant',
+        content: 'summer-poem 已完成，还在等 fibonacci 的结果...',
+        timestamp: 3,
+        metadata: { isStreaming: false, isFinal: true },
+      },
+    ]);
+
+    const adapter = new OpenClawRuntimeAdapter(store, {});
+    const sessionKey = `agent:main:lobsterai:${session.id}`;
+    adapter.gatewayClient = {
+      start: () => {},
+      stop: () => {},
+      request: async () => ({
+        messages: [
+          { role: 'user', content: '起两个subagent 随便做点什么，用于测试' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: thinkingText },
+              { type: 'text', text: finalText },
+            ],
+          },
+        ],
+      }),
+    };
+
+    const turn = createActiveTurn(session.id, sessionKey, 'run-final');
+    adapter.activeTurns.set(session.id, turn);
+    adapter.latestTurnTokenBySession.set(session.id, turn.turnToken);
+
+    adapter.handleChatEvent({
+      state: 'final',
+      runId: 'run-final',
+      sessionKey,
+      message: { role: 'assistant', content: finalText },
+    }, 1);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const thinkingMessages = session.messages.filter((message) => message.metadata?.isThinking === true);
+    expect(thinkingMessages.map((message) => message.id)).toEqual(['msg-2']);
+    expect(thinkingMessages[0].content).toBe(thinkingText);
+    expect(session.messages.some((message) => (
+      message.type === 'assistant'
+      && message.metadata?.isThinking !== true
+      && message.content === finalText
+    ))).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(800);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('chat final removes redundant assistant prefix segment before final summary', async () => {
+  vi.useFakeTimers();
+  try {
+    const redundantPrefix = [
+      '邀请函页面已经做好了！',
+      '主要文件：',
+      '- leo-birthday-invitation/index.html',
+      '实现内容：',
+      '1. 深蓝星空背景和动态闪烁星星。',
+      '2. 手机优先响应式布局。',
+    ].join('\n');
+    const finalSummary = [
+      redundantPrefix,
+      '3. RSVP 两个按钮带温柔提示。',
+      '4. 已生成移动端预览图，方便验收。',
+    ].join('\n');
+    const { session, store } = createReconcileStore([
+      { id: 'msg-1', type: 'user', content: '确认执行计划', timestamp: 1, metadata: {} },
+      { id: 'msg-2', type: 'assistant', content: redundantPrefix, timestamp: 2, metadata: { isStreaming: false, isFinal: true } },
+      { id: 'msg-3', type: 'tool_use', content: 'write_file', timestamp: 3, metadata: {} },
+      { id: 'msg-4', type: 'tool_result', content: 'file created', timestamp: 4, metadata: {} },
+      { id: 'msg-5', type: 'assistant', content: redundantPrefix, timestamp: 5, metadata: { isStreaming: true, isFinal: false } },
+    ]);
+
+    const adapter = new OpenClawRuntimeAdapter(store, {});
+    const sessionKey = `agent:main:lobsterai:${session.id}`;
+    adapter.gatewayClient = {
+      start: () => {},
+      stop: () => {},
+      request: async () => ({
+        messages: [
+          { role: 'user', content: '确认执行计划' },
+          { role: 'assistant', content: finalSummary },
+        ],
+      }),
+    };
+
+    const turn = createActiveTurn(session.id, sessionKey, 'run-1');
+    turn.assistantMessageId = 'msg-5';
+    turn.committedAssistantText = redundantPrefix;
+    turn.currentAssistantSegmentText = redundantPrefix;
+    turn.currentText = finalSummary;
+    turn.currentContentText = finalSummary;
+    turn.currentContentBlocks = [finalSummary];
+    adapter.activeTurns.set(session.id, turn);
+    adapter.latestTurnTokenBySession.set(session.id, turn.turnToken);
+
+    adapter.handleChatEvent({
+      state: 'final',
+      runId: 'run-1',
+      sessionKey,
+      message: { role: 'assistant', content: finalSummary },
+    }, 1);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const updatedSession = store.getSession(session.id);
+    expect(updatedSession?.messages.some((message) => message.id === 'msg-2')).toBe(false);
+    expect(updatedSession?.messages.find((message) => message.id === 'msg-5')?.content).toBe(finalSummary);
 
     await vi.advanceTimersByTimeAsync(800);
     expect(session.status).toBe('completed');
@@ -4991,6 +5272,112 @@ test('onSessionDeleted deletes gateway transcripts for all session keys', async 
   });
   expect(adapter.deletedChannelKeys.has(channelSessionKey)).toBe(true);
   expect(adapter.deletedChannelKeys.has(managedSessionKey)).toBe(false);
+});
+
+test('child lifecycle end marks matching subagent done before local session resolution', () => {
+  const runs = new Map<string, Record<string, unknown>>();
+  const subagentRunStore = {
+    insertSubagentRun: vi.fn((run: Record<string, unknown>) => {
+      runs.set(run.id as string, { ...run });
+    }),
+    updateSubagentRunStatus: vi.fn((id: string, status: string, endedAt?: number) => {
+      const run = runs.get(id);
+      if (run) {
+        run.status = status;
+        run.endedAt = endedAt;
+      }
+    }),
+    listSubagentRuns: () => [],
+  };
+  const adapter = new OpenClawRuntimeAdapter(
+    { getSession: () => null } as never,
+    {},
+    {},
+    subagentRunStore as never,
+  );
+  const childSessionKey = 'agent:main:subagent:e0fbd45e-25ef-4765-b1b1-a82035637f31';
+
+  adapter.subagentTracker.onToolStart(
+    'call-fibonacci',
+    { taskName: 'fibonacci', task: 'calculate fibonacci' },
+    'parent-session',
+  );
+  adapter.subagentTracker.onSpawnResult(
+    'call-fibonacci',
+    JSON.stringify({
+      status: 'accepted',
+      childSessionKey,
+      runId: '7d6f0db8-1066-4900-b6ea-a47b23825c8e',
+    }),
+    {},
+  );
+
+  adapter.handleAgentEvent({
+    runId: '7d6f0db8-1066-4900-b6ea-a47b23825c8e',
+    sessionKey: childSessionKey,
+    stream: 'lifecycle',
+    data: { phase: 'end' },
+  }, 1);
+
+  expect(subagentRunStore.updateSubagentRunStatus).toHaveBeenCalledWith(
+    'call-fibonacci',
+    'done',
+    expect.any(Number),
+  );
+  expect(runs.get('call-fibonacci')?.status).toBe('done');
+});
+
+test('child chat final marks matching subagent done before local session resolution', () => {
+  const runs = new Map<string, Record<string, unknown>>();
+  const subagentRunStore = {
+    insertSubagentRun: vi.fn((run: Record<string, unknown>) => {
+      runs.set(run.id as string, { ...run });
+    }),
+    updateSubagentRunStatus: vi.fn((id: string, status: string, endedAt?: number) => {
+      const run = runs.get(id);
+      if (run) {
+        run.status = status;
+        run.endedAt = endedAt;
+      }
+    }),
+    listSubagentRuns: () => [],
+  };
+  const adapter = new OpenClawRuntimeAdapter(
+    { getSession: () => null } as never,
+    {},
+    {},
+    subagentRunStore as never,
+  );
+  const childSessionKey = 'agent:main:subagent:e0fbd45e-25ef-4765-b1b1-a82035637f31';
+
+  adapter.subagentTracker.onToolStart(
+    'call-fibonacci',
+    { taskName: 'fibonacci', task: 'calculate fibonacci' },
+    'parent-session',
+  );
+  adapter.subagentTracker.onSpawnResult(
+    'call-fibonacci',
+    JSON.stringify({
+      status: 'accepted',
+      childSessionKey,
+      runId: '7d6f0db8-1066-4900-b6ea-a47b23825c8e',
+    }),
+    {},
+  );
+
+  adapter.handleChatEvent({
+    state: 'final',
+    runId: '7d6f0db8-1066-4900-b6ea-a47b23825c8e',
+    sessionKey: childSessionKey,
+    message: { role: 'assistant', content: '已完成。' },
+  }, 1);
+
+  expect(subagentRunStore.updateSubagentRunStatus).toHaveBeenCalledWith(
+    'call-fibonacci',
+    'done',
+    expect.any(Number),
+  );
+  expect(runs.get('call-fibonacci')?.status).toBe('done');
 });
 
 test('syncSystemMessagesFromHistory skips pure heartbeat ack system messages', () => {

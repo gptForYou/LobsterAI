@@ -114,6 +114,21 @@ function deriveNimAccountConfigKey(
   return deriveNimAccountId(instance);
 }
 
+function hasNimRuntimeCredentials(
+  instance: Pick<NimInstanceConfig, 'nimToken' | 'appKey' | 'account' | 'token'>,
+): boolean {
+  return Boolean(
+    (instance.nimToken && instance.nimToken.trim()) ||
+    (instance.appKey && instance.account && instance.token),
+  );
+}
+
+function isEnabledNimRuntimeInstance(
+  instance: Pick<NimInstanceConfig, 'enabled' | 'nimToken' | 'appKey' | 'account' | 'token'>,
+): boolean {
+  return Boolean(instance.enabled && hasNimRuntimeCredentials(instance));
+}
+
 function shouldUseOpenAIResponsesApi(providerName?: string, baseURL?: string): boolean {
   if (providerName !== ProviderName.OpenAI) return false;
   if (!baseURL) return true;
@@ -263,6 +278,8 @@ const MANAGED_WEB_SEARCH_POLICY_PROMPT = [
   '',
   'Do not claim you searched the web unless you actually used `browser`, `web_fetch`, or the LobsterAI `web-search` skill.',
 ].join('\n');
+
+const BUNDLED_BROWSER_PLUGIN_ID = 'browser';
 
 const MANAGED_BROWSER_POLICY_PROMPT = [
   '## Browser Policy',
@@ -1473,6 +1490,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     const feishuInstances = this.getFeishuInstances();
 
     const qqInstances = this.getQQInstances();
+    const discordInstances = this.getDiscordInstances();
 
     const wecomInstances = this.getWecomInstances();
 
@@ -1624,13 +1642,15 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           )),
         );
         const qqbotPluginEnabled = qqInstances.some(i => i.enabled && i.appId);
-
+        const discordPluginEnabled = discordInstances.some(i => i.enabled && i.botToken);
+        const userPlugins = this.getUserPlugins();
 
         const pluginEntries: Record<string, unknown> = {
           // Preserve ALL existing plugin entries so runtime auto-injected
           // plugins (moonshot, minimax, volcengine, browser, etc.) survive
           // config rewrites.  Our managed entries below override stale values.
           ...cleanedExistingEntries,
+          [BUNDLED_BROWSER_PLUGIN_ID]: { enabled: true },
           qqbot: { enabled: qqbotPluginEnabled },
           ...Object.fromEntries(
             preinstalledPlugins.map(plugin => {
@@ -1641,11 +1661,12 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
                 if (pluginMatches(plugin, DINGTALK_OPENCLAW_CHANNEL, 'dingtalk')) return dingTalkInstances.some(i => i.enabled && i.clientId);
                 if (pluginMatches(plugin, 'openclaw-lark', 'feishu-openclaw-plugin'))
                   return feishuInstances.some(i => i.enabled && i.appId);
-                if (pluginMatches(plugin, 'openclaw-qqbot')) return qqInstances.some(i => i.enabled && i.appId);
+                if (pluginMatches(plugin, 'openclaw-qqbot', 'qqbot')) return qqbotPluginEnabled;
+                if (pluginMatches(plugin, 'discord')) return discordPluginEnabled;
                 if (pluginMatches(plugin, 'wecom-openclaw-plugin')) return wecomInstances.some(i => i.enabled && i.botId);
                 if (pluginMatches(plugin, 'moltbot-popo')) return popoInstances.some(i => i.enabled && i.appKey);
                 if (pluginMatches(plugin, 'openclaw-nim-channel', NIM_CHANNEL_PLUGIN_ID, 'nim'))
-                  return nimInstances.some(i => i.enabled && ((i.nimToken && i.nimToken.trim()) || (i.appKey && i.account && i.token)));
+                  return nimInstances.some(isEnabledNimRuntimeInstance);
                 if (pluginMatches(plugin, 'openclaw-netease-bee')) return !!(neteaseBeeChanConfig?.enabled && neteaseBeeChanConfig.clientId && neteaseBeeChanConfig.secret);
                 if (pluginMatches(plugin, 'openclaw-weixin')) return true; // Always keep enabled for QR login discovery
                 if (pluginMatches(plugin, 'clawemail-email', EMAIL_PLUGIN_ID)) return !!emailConfig?.instances.some(i => i.enabled && i.email);
@@ -1665,7 +1686,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           ...(hasQwenProvider && qwenPortalAuthPluginId ? { [qwenPortalAuthPluginId]: { enabled: true } } : {}),
           // User-installed plugins: merge enabled state and config from user_plugins table
           ...Object.fromEntries(
-            this.getUserPlugins().map(p => [p.pluginId, {
+            userPlugins.map(p => [p.pluginId, {
               enabled: p.enabled,
               ...(p.config && Object.keys(p.config).length > 0 ? { config: p.config } : {}),
             }]),
@@ -1675,6 +1696,16 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           // a process that always fails.  See openclaw/openclaw#62588.
           'acpx': { enabled: false },
         };
+        const existingAllow = Array.isArray((existingPlugins as Record<string, unknown>).allow)
+          ? ((existingPlugins as Record<string, unknown>).allow as unknown[])
+              .filter((id): id is string => typeof id === 'string' && id.length > 0)
+          : [];
+        const trustedPluginAllow = Array.from(new Set([
+          ...existingAllow,
+          BUNDLED_BROWSER_PLUGIN_ID,
+          ...preinstalledPlugins.map(plugin => plugin.pluginId),
+          ...userPlugins.filter(plugin => plugin.enabled).map(plugin => plugin.pluginId),
+        ])).sort();
 
         return Object.keys(pluginEntries).length > 0
           ? {
@@ -1698,6 +1729,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
                 // from dist/extensions/ at build time (see prune-openclaw-runtime.cjs).
                 // OpenClaw validates deny IDs against discovered plugins, so denying
                 // a removed plugin causes "Config invalid: plugin not found" errors.
+                allow: trustedPluginAllow,
                 deny: [],
                 entries: pluginEntries,
               },
@@ -1826,7 +1858,6 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     // When disabled, omit the channel key entirely so OpenClaw won't load the plugin.
 
     // Sync Discord OpenClaw channel config — multi-instance via accounts
-    const discordInstances = this.getDiscordInstances();
     const enabledDiscordInstances = discordInstances.filter(i => i.enabled && i.botToken);
     if (enabledDiscordInstances.length > 0) {
       const accounts: Record<string, unknown> = {};
@@ -2174,9 +2205,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
       }
     }
     // Sync NIM OpenClaw channel config (via openclaw-nim plugin) — multi-instance via accounts
-    const configuredNimInstances = nimInstances.filter((inst) =>
-      Boolean((inst.nimToken && inst.nimToken.trim()) || (inst.appKey && inst.account && inst.token))
-    );
+    const configuredNimInstances = nimInstances.filter(isEnabledNimRuntimeInstance);
     if (configuredNimInstances.length > 0) {
       const accounts: Record<string, Record<string, unknown>> = {};
       configuredNimInstances.forEach((inst, idx) => {
@@ -2185,7 +2214,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           ? inst.nimToken.trim()
           : `${inst.appKey}|${inst.account}|\${${tokenEnvVar}}`;
         const nimInstance: Record<string, unknown> = {
-          enabled: inst.enabled ?? false,
+          enabled: true,
           nimToken,
           antispamEnabled: inst.antispamEnabled ?? true,
         };
@@ -2491,11 +2520,13 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
       }
     }
 
-    // NIM
-    const nimInstances = this.getNimInstances().filter((inst) => inst.enabled && inst.token);
+    // NIM — indexes must match the enabled instances written to channels.nim.accounts.
+    const nimInstances = this.getNimInstances().filter(isEnabledNimRuntimeInstance);
     for (let idx = 0; idx < nimInstances.length; idx++) {
+      const inst = nimInstances[idx];
+      if (inst.nimToken?.trim() || !inst.token) continue;
       const key = idx === 0 ? 'LOBSTER_NIM_TOKEN' : `LOBSTER_NIM_TOKEN_${idx}`;
-      env[key] = nimInstances[idx].token;
+      env[key] = inst.token;
     }
 
     const D = gwDiagTs;
