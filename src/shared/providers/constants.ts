@@ -237,10 +237,10 @@ const PROVIDER_DEFINITIONS = [
     region: 'china',
     enPriority: 0,
     defaultModels: [
-      { id: 'kimi-k2.6', name: 'Kimi K2.6', supportsImage: true, supportsThinking: true },
-      { id: 'kimi-k2.5', name: 'Kimi K2.5', supportsImage: true, supportsThinking: true },
+      { id: 'kimi-k2.6', name: 'Kimi K2.6', supportsImage: true, supportsThinking: true, contextWindow: 262_144 },
+      { id: 'kimi-k2.5', name: 'Kimi K2.5', supportsImage: true, supportsThinking: true, contextWindow: 262_144 },
     ],
-    codingPlanModels: [{ id: 'kimi-for-coding', name: 'Kimi K2.5', supportsImage: true, supportsThinking: true }],
+    codingPlanModels: [{ id: 'kimi-for-coding', name: 'Kimi K2.5', supportsImage: true, supportsThinking: true, contextWindow: 256_000 }],
   },
   {
     id: ProviderName.Qwen,
@@ -263,8 +263,8 @@ const PROVIDER_DEFINITIONS = [
     region: 'china',
     enPriority: 0,
     defaultModels: [
-      { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus', supportsImage: true },
-      { id: 'qwen3.5-plus', name: 'Qwen3.5 Plus', supportsImage: true },
+      { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus', supportsImage: true, contextWindow: 1_000_000 },
+      { id: 'qwen3.5-plus', name: 'Qwen3.5 Plus', supportsImage: true, contextWindow: 1_000_000 },
     ],
   },
   {
@@ -288,9 +288,9 @@ const PROVIDER_DEFINITIONS = [
     region: 'china',
     enPriority: 0,
     defaultModels: [
-      { id: 'glm-5.1', name: 'GLM 5.1', supportsImage: false, supportsThinking: true },
-      { id: 'glm-5', name: 'GLM 5', supportsImage: false, supportsThinking: true },
-      { id: 'glm-4.7', name: 'GLM 4.7', supportsImage: false, supportsThinking: true },
+      { id: 'glm-5.1', name: 'GLM 5.1', supportsImage: false, supportsThinking: true, contextWindow: 202_800 },
+      { id: 'glm-5', name: 'GLM 5', supportsImage: false, supportsThinking: true, contextWindow: 202_800 },
+      { id: 'glm-4.7', name: 'GLM 4.7', supportsImage: false, supportsThinking: true, contextWindow: 204_800 },
     ],
   },
   {
@@ -310,8 +310,8 @@ const PROVIDER_DEFINITIONS = [
     enPriority: 0,
     defaultModels: [
       { id: 'MiniMax-M3', name: 'MiniMax M3', supportsImage: true, supportsThinking: true, contextWindow: 1_000_000 },
-      { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', supportsImage: false },
-      { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', supportsImage: false },
+      { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', supportsImage: false, contextWindow: 204_800 },
+      { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', supportsImage: false, contextWindow: 204_800 },
     ],
   },
   {
@@ -517,9 +517,9 @@ const PROVIDER_DEFINITIONS = [
     region: 'global',
     enPriority: 2,
     defaultModels: [
-      { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', supportsImage: true, supportsThinking: true },
-      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', supportsImage: true, supportsThinking: true },
-      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', supportsImage: true, supportsThinking: true },
+      { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', supportsImage: true, supportsThinking: true, contextWindow: 1_048_576 },
+      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', supportsImage: true, supportsThinking: true, contextWindow: 1_048_576 },
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', supportsImage: true, supportsThinking: true, contextWindow: 1_048_576 },
     ],
   },
   {

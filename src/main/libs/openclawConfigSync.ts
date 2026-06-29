@@ -47,6 +47,7 @@ import { parseChannelSessionKey } from './openclawChannelSessionSync';
 import { OpenClawConfigImpact } from './openclawConfigImpact';
 import type { OpenClawEngineManager } from './openclawEngineManager';
 import { getMainAgentWorkspacePath, readBootstrapFile } from './openclawMemoryFile';
+import { resolveOpenClawCatalogModelMaxTokens } from './openclawModelCatalog';
 
 const gwDiagTs = (): string => {
   const d = new Date();
@@ -89,6 +90,7 @@ const mapExecutionModeToSandboxMode = (
 export const OPENCLAW_AGENT_TIMEOUT_SECONDS = 3600;
 const DINGTALK_OPENCLAW_CHANNEL = 'dingtalk-connector';
 export const OPENCLAW_BINDING_ANY_ACCOUNT_ID = '*';
+const OPENCLAW_DEFAULT_MODEL_MAX_TOKENS = 8192;
 
 const OpenClawContextCacheProvider = {
   DashScope: 'dashscope',
@@ -99,9 +101,6 @@ const OpenClawContextCacheMode = {
   Explicit: 'explicit',
 } as const;
 
-// OpenClaw caps implicit Anthropic Messages output requests at 32k unless a
-// caller explicitly passes another per-request maxTokens value.
-const OPENCLAW_ANTHROPIC_DEFAULT_MAX_TOKENS = 32000;
 const EXPLICIT_CONTEXT_CACHE_LOG_PREFIX = '********************';
 const CUSTOM_PROVIDER_NAME_PATTERN = /^custom_[0-9]$/;
 
@@ -670,6 +669,70 @@ const resolveDeepSeekModelReasoning = (modelId: string): boolean | undefined => 
   return undefined;
 };
 
+const isPositiveModelLimit = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+const clampModelMaxTokens = (rawMaxTokens: number | undefined, contextWindow: number | undefined): number | undefined => {
+  if (!isPositiveModelLimit(rawMaxTokens)) {
+    return undefined;
+  }
+  if (!isPositiveModelLimit(contextWindow)) {
+    return rawMaxTokens;
+  }
+  return Math.min(rawMaxTokens, contextWindow);
+};
+
+const resolveCatalogModelMaxTokens = (
+  providerId: string,
+  modelId: string,
+  sessionModelId: string,
+): number | undefined => {
+  const baseCandidateModelIds = [
+    modelId,
+    sessionModelId,
+    normalizeModelName(modelId),
+    normalizeModelName(sessionModelId),
+  ].filter(Boolean);
+  const candidateModelIds = Array.from(new Set([
+    ...baseCandidateModelIds,
+    ...baseCandidateModelIds
+      .filter(candidate => candidate.toLowerCase().startsWith('claude-'))
+      .map(candidate => candidate.replace(/\./g, '-')),
+  ]));
+
+  for (const candidateModelId of candidateModelIds) {
+    const maxTokens = resolveOpenClawCatalogModelMaxTokens(providerId, candidateModelId);
+    if (isPositiveModelLimit(maxTokens)) {
+      return maxTokens;
+    }
+  }
+  return undefined;
+};
+
+const resolveModelMaxTokensForOpenClaw = (options: {
+  api: OpenClawProviderApi;
+  modelId: string;
+  sessionModelId: string;
+  descriptor: ProviderDescriptor;
+  contextWindow?: number;
+}): number | undefined => {
+  const catalogMaxTokens = options.api === OpenClawApiConst.AnthropicMessages
+    ? resolveCatalogModelMaxTokens(
+      options.descriptor.providerId,
+      options.modelId,
+      options.sessionModelId,
+    )
+    : undefined;
+  const rawMaxTokens = catalogMaxTokens
+    ?? options.descriptor.modelDefaults?.maxTokens
+    ?? (
+      options.api === OpenClawApiConst.AnthropicMessages
+        ? OPENCLAW_DEFAULT_MODEL_MAX_TOKENS
+        : undefined
+    );
+  return clampModelMaxTokens(rawMaxTokens, options.contextWindow);
+};
+
 const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
   [ProviderName.LobsteraiServer]: {
     providerId: OpenClawProviderId.LobsteraiServer,
@@ -907,10 +970,13 @@ export const buildProviderSelection = (options: {
     options.modelId,
     options.contextWindow,
   ) ?? descriptor.modelDefaults?.contextWindow;
-  const modelMaxTokens = descriptor.modelDefaults?.maxTokens
-    ?? (api === OpenClawApiConst.AnthropicMessages
-      ? OPENCLAW_ANTHROPIC_DEFAULT_MAX_TOKENS
-      : undefined);
+  const modelMaxTokens = resolveModelMaxTokensForOpenClaw({
+    api,
+    modelId: options.modelId,
+    sessionModelId,
+    descriptor,
+    contextWindow,
+  });
   const request = shouldUseEnvProxyForProviderBaseUrl(baseUrl)
     ? { proxy: { mode: 'env-proxy' as const } }
     : undefined;

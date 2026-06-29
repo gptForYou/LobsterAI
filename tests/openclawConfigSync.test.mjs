@@ -407,7 +407,7 @@ test('sync disables legacy reminder skills so native IM sessions use built-in cr
   assert.equal(config.skills.entries['feishu-cron-reminder'].enabled, false);
 });
 
-test('sync writes default maxTokens for Anthropic-format custom provider models', (t) => {
+test('sync does not use OpenClaw catalog maxTokens when custom provider id does not match', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-config-sync-anthropic-max-tokens-'));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
   setElectronPaths(tmpDir);
@@ -440,10 +440,11 @@ test('sync writes default maxTokens for Anthropic-format custom provider models'
   const model = config.models.providers.custom_0.models[0];
   assert.equal(config.models.providers.custom_0.api, 'anthropic-messages');
   assert.equal(model.api, 'anthropic-messages');
-  assert.equal(model.maxTokens, 32000);
+  assert.equal(model.contextWindow, 1000000);
+  assert.equal(model.maxTokens, 8192);
 });
 
-test('sync writes default maxTokens for MiniMax Anthropic-format models', (t) => {
+test('sync writes OpenClaw MiniMax maxTokens for inline provider models', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-config-sync-minimax-max-tokens-'));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
   setElectronPaths(tmpDir);
@@ -478,10 +479,53 @@ test('sync writes default maxTokens for MiniMax Anthropic-format models', (t) =>
   assert.equal(provider.baseUrl, 'https://api.minimaxi.com/anthropic');
   assert.equal(provider.api, 'anthropic-messages');
   assert.equal(model.api, 'anthropic-messages');
-  assert.equal(model.maxTokens, 32000);
+  assert.equal(model.contextWindow, 1000000);
+  assert.equal(model.maxTokens, 131072);
 });
 
-test('sync does not write Anthropic maxTokens fallback for OpenAI-format custom provider models', (t) => {
+test('sync writes conservative OpenClaw maxTokens for unknown Anthropic-format custom provider models', (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-config-sync-unknown-anthropic-max-tokens-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  setElectronPaths(tmpDir);
+
+  const appConfig = {
+    model: {
+      defaultModel: 'custom-claude-compatible',
+      defaultModelProvider: 'custom_0',
+    },
+    providers: {
+      custom_0: {
+        enabled: true,
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        models: [
+          {
+            id: 'custom-claude-compatible',
+            name: 'Custom Claude Compatible',
+            supportsImage: false,
+            contextWindow: 1_000_000,
+          },
+        ],
+      },
+    },
+  };
+
+  const sync = createSync(tmpDir, appConfig);
+  const result = sync.sync('test-unknown-anthropic-max-tokens');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.changed, true);
+
+  const config = JSON.parse(fs.readFileSync(path.join(tmpDir, 'state', 'openclaw.json'), 'utf8'));
+  const model = config.models.providers.custom_0.models[0];
+  assert.equal(config.models.providers.custom_0.api, 'anthropic-messages');
+  assert.equal(model.api, 'anthropic-messages');
+  assert.equal(model.contextWindow, 1000000);
+  assert.equal(model.maxTokens, 8192);
+});
+
+test('sync does not write generic maxTokens for OpenAI-format custom provider models', (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-config-sync-openai-no-max-tokens-'));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
   setElectronPaths(tmpDir);
