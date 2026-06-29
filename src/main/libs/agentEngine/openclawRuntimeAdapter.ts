@@ -37,6 +37,7 @@ import { setCoworkProxySessionId } from '../coworkOpenAICompatProxy';
 import { extractOpenClawAssistantStreamParts,extractOpenClawAssistantStreamText } from '../openclawAssistantText';
 import {
   buildManagedSessionKey,
+  isCronSessionKey,
   isManagedSessionKey,
   type OpenClawChannelSessionSync,
   parseManagedSessionKey,
@@ -827,6 +828,11 @@ type ReconciledConversationEntry = {
   timestamp?: number;
 };
 
+const CronRunHistoryMetadataKey = {
+  SessionKey: 'openclawCronRunSessionKey',
+  EntryIndex: 'openclawCronRunEntryIndex',
+} as const;
+
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 };
@@ -1028,6 +1034,46 @@ const applyLocalTimestampsToEntries = (
     const timestamp = timestamps?.shift();
     return timestamp != null ? { ...entry, timestamp } : entry;
   });
+};
+
+const getCronRunHistorySessionKey = (metadata: unknown): string | null => {
+  if (!isRecord(metadata)) return null;
+  const value = metadata[CronRunHistoryMetadataKey.SessionKey];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+};
+
+const withCronRunHistoryMetadata = (
+  entry: ReconciledConversationEntry,
+  sessionKey: string,
+  entryIndex: number,
+): ReconciledConversationEntry => ({
+  ...entry,
+  metadata: {
+    ...(entry.metadata ?? {}),
+    [CronRunHistoryMetadataKey.SessionKey]: sessionKey,
+    [CronRunHistoryMetadataKey.EntryIndex]: entryIndex,
+  },
+});
+
+const isLocalConversationCoveredByCronHistory = (
+  localEntries: ReadonlyArray<{ role: 'user' | 'assistant'; text: string; metadata?: Record<string, unknown> }>,
+  authoritativeEntries: ReadonlyArray<ReconciledConversationEntry>,
+): boolean => {
+  if (localEntries.length > authoritativeEntries.length) return false;
+
+  let authIdx = 0;
+  for (const local of localEntries) {
+    let matched = false;
+    while (authIdx < authoritativeEntries.length) {
+      const authoritative = authoritativeEntries[authIdx++];
+      if (isSameHistoryEntry(local, authoritative)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;
+  }
+  return true;
 };
 
 /**
@@ -5671,7 +5717,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         this.emit('error', sessionId, errorMessage);
         this.cleanupSessionTurn(sessionId);
         this.rejectTurn(sessionId, new Error(errorMessage));
-        void this.reconcileWithHistory(sessionId, erroredSessionKey);
+        void this.syncSessionHistoryFromGateway(sessionId, erroredSessionKey);
       }, OpenClawRuntimeAdapter.LIFECYCLE_ERROR_FALLBACK_DELAY_MS);
     }
   }
@@ -5881,7 +5927,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       if (isManagedSessionKey(turn.sessionKey)) {
         await this.syncFinalAssistantWithHistory(sessionId, turn);
       } else {
-        await this.reconcileWithHistory(sessionId, turn.sessionKey);
+        await this.syncSessionHistoryFromGateway(sessionId, turn.sessionKey);
       }
     } catch (error) {
       console.warn('[OpenClawRuntime] fallback final sync failed:', error);
@@ -6776,7 +6822,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         });
         return;
       }
-      await this.reconcileWithHistory(sessionId, turn.sessionKey);
+      await this.syncSessionHistoryFromGateway(sessionId, turn.sessionKey);
       this.store.updateSession(sessionId, { status: 'completed' });
       this.emit('complete', sessionId, payload.runId ?? turn.runId);
       this.cleanupSessionTurn(sessionId);
@@ -6926,7 +6972,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       this.cleanupSessionTurn(sessionId);
       this.rejectTurn(sessionId, new Error(errorMessage));
       // Reconcile even on error so the UI shows messages already delivered.
-      void this.reconcileWithHistory(sessionId, erroredSessionKey);
+      void this.syncSessionHistoryFromGateway(sessionId, erroredSessionKey);
       return;
     }
 
@@ -6938,7 +6984,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       await this.syncFinalAssistantWithHistory(sessionId, turn);
     } else {
       // Awaited so that IM handlers reading from the store see reconciled data.
-      await this.reconcileWithHistory(sessionId, turn.sessionKey);
+      await this.syncSessionHistoryFromGateway(sessionId, turn.sessionKey);
     }
 
     const reconciledPlanText = turn.currentAssistantSegmentText.trim()
@@ -7359,7 +7405,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const abortedSessionKey = turn.sessionKey;
     this.cleanupSessionTurn(sessionId);
     this.resolveTurn(sessionId);
-    void this.reconcileWithHistory(sessionId, abortedSessionKey);
+    void this.syncSessionHistoryFromGateway(sessionId, abortedSessionKey);
   }
 
   /**
@@ -7554,7 +7600,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.emit('error', sessionId, errorMessage);
     this.cleanupSessionTurn(sessionId);
     this.rejectTurn(sessionId, new Error(errorMessage));
-    void this.reconcileWithHistory(sessionId, erroredSessionKey);
+    void this.syncSessionHistoryFromGateway(sessionId, erroredSessionKey);
   }
 
   private resolveApprovalSessionId(sessionKey: string): string | undefined {
@@ -7681,6 +7727,166 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
     this.gatewayHistoryCountBySession.set(sessionId, historyMessages.length);
+  }
+
+  private async syncSessionHistoryFromGateway(
+    sessionId: string,
+    sessionKey: string,
+    options?: { isFullSync?: boolean },
+  ): Promise<void> {
+    if (isCronSessionKey(sessionKey)) {
+      await this.syncCronRunHistory(sessionId, sessionKey, options);
+      return;
+    }
+
+    await this.reconcileWithHistory(sessionId, sessionKey, options);
+  }
+
+  /**
+   * Cron run sessions are not a stable full-conversation source of truth:
+   * each run-scoped sessionKey only describes one execution, while the local
+   * Cowork session can later contain user follow-up turns under a managed key.
+   * Sync cron history non-destructively so missed run output can be backfilled
+   * without deleting follow-up messages from the local conversation.
+   */
+  private async syncCronRunHistory(
+    sessionId: string,
+    sessionKey: string,
+    _options?: { isFullSync?: boolean },
+  ): Promise<void> {
+    const client = this.gatewayClient;
+    if (!client) {
+      console.log('[CronHistorySync] no gateway client, skipping - sessionId:', sessionId);
+      return;
+    }
+
+    try {
+      const history = await client.request<{ messages?: unknown[] }>('chat.history', {
+        sessionKey,
+        limit: FINAL_HISTORY_SYNC_LIMIT,
+      }, { timeoutMs: 10_000 });
+      if (!Array.isArray(history?.messages) || history.messages.length === 0) {
+        console.log('[CronHistorySync] empty history - sessionId:', sessionId);
+        this.channelSyncCursor.set(sessionId, 0);
+        return;
+      }
+
+      const previousHistoryCountKnown = this.gatewayHistoryCountBySession.has(sessionId);
+      const previousHistoryCount = this.gatewayHistoryCountBySession.get(sessionId) ?? 0;
+      this.gatewayHistoryCountBySession.set(sessionId, history.messages.length);
+      this.syncSystemMessagesFromHistory(sessionId, history.messages, {
+        previousCountKnown: previousHistoryCountKnown,
+        previousCount: previousHistoryCount,
+      });
+
+      const authoritativeEntries: ReconciledConversationEntry[] = [];
+      for (const entry of extractGatewayHistoryEntries(history.messages)) {
+        const role = entry.role;
+        if (role !== 'user' && role !== 'assistant') continue;
+        const text = entry.text.trim();
+        if (!text || shouldSuppressHeartbeatText(role, text)) continue;
+
+        let metadata: Record<string, unknown> | undefined;
+        if (role === 'assistant' && (entry.usage || entry.model)) {
+          metadata = {};
+          if (entry.usage) {
+            metadata.usage = {
+              ...(entry.usage.input != null && { inputTokens: entry.usage.input }),
+              ...(entry.usage.output != null && { outputTokens: entry.usage.output }),
+            };
+          }
+          if (entry.model) {
+            metadata.model = entry.model;
+          }
+        }
+
+        authoritativeEntries.push(withCronRunHistoryMetadata({
+          role,
+          text,
+          ...(metadata && { metadata }),
+          ...(entry.timestamp != null && { timestamp: entry.timestamp }),
+        }, sessionKey, authoritativeEntries.length));
+      }
+
+      if (authoritativeEntries.length === 0) {
+        console.log('[CronHistorySync] no user/assistant entries in history - sessionId:', sessionId);
+        this.channelSyncCursor.set(sessionId, 0);
+        return;
+      }
+
+      const session = this.store.getSession(sessionId);
+      if (!session) return;
+
+      if (session.messages.some((message: CoworkMessage) =>
+        getCronRunHistorySessionKey(message.metadata) === sessionKey,
+      )) {
+        this.channelSyncCursor.set(sessionId, authoritativeEntries.length);
+        return;
+      }
+
+      const localEntries = session.messages
+        .filter((message: CoworkMessage) => message.type === 'user' || message.type === 'assistant')
+        .map((message: CoworkMessage) => ({
+          id: message.id,
+          role: message.type as 'user' | 'assistant',
+          text: message.content.trim(),
+          metadata: isRecord(message.metadata) ? message.metadata : undefined,
+          timestamp: message.timestamp,
+        }))
+        .filter((entry) => entry.text && !shouldSuppressHeartbeatText(entry.role, entry.text));
+
+      const hasOtherCronRunHistory = localEntries.some((entry) => {
+        const importedSessionKey = getCronRunHistorySessionKey(entry.metadata);
+        return Boolean(importedSessionKey && importedSessionKey !== sessionKey);
+      });
+
+      if (
+        !hasOtherCronRunHistory
+        && isLocalConversationCoveredByCronHistory(localEntries, authoritativeEntries)
+      ) {
+        this.store.replaceConversationMessages(
+          sessionId,
+          applyLocalTimestampsToEntries(authoritativeEntries, localEntries),
+        );
+        this.channelSyncCursor.set(sessionId, authoritativeEntries.length);
+        return;
+      }
+
+      const usedLocalMessageIds = new Set<string>();
+      for (const authoritative of authoritativeEntries) {
+        const matchingLocal = localEntries.find((entry) => {
+          if (usedLocalMessageIds.has(entry.id)) return false;
+          if (!isSameHistoryEntry(entry, authoritative)) return false;
+          const importedSessionKey = getCronRunHistorySessionKey(entry.metadata);
+          return !importedSessionKey || importedSessionKey === sessionKey;
+        });
+
+        if (matchingLocal) {
+          usedLocalMessageIds.add(matchingLocal.id);
+          this.store.updateMessage(sessionId, matchingLocal.id, {
+            metadata: {
+              ...(matchingLocal.metadata ?? {}),
+              ...(authoritative.metadata ?? {}),
+            },
+          });
+          continue;
+        }
+
+        this.store.addMessage(sessionId, {
+          type: authoritative.role,
+          content: authoritative.text,
+          metadata: {
+            isStreaming: false,
+            isFinal: true,
+            ...(authoritative.metadata ?? {}),
+          },
+        });
+      }
+
+      this.channelSyncCursor.set(sessionId, authoritativeEntries.length);
+    } catch (error) {
+      console.warn('[CronHistorySync] failed - sessionId:', sessionId, 'error:', error);
+    }
   }
 
   /**
@@ -8431,7 +8637,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.fullySyncedSessions.add(sessionId);
 
     try {
-      await this.reconcileWithHistory(sessionId, sessionKey, { isFullSync: true });
+      await this.syncSessionHistoryFromGateway(sessionId, sessionKey, { isFullSync: true });
     } catch (error) {
       console.error('[ChannelSync] syncFullChannelHistory: error:', error);
       // Remove from synced set so retry is possible
@@ -8449,7 +8655,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
 
-    await this.reconcileWithHistory(sessionId, sessionKey);
+    await this.syncSessionHistoryFromGateway(sessionId, sessionKey);
   }
 
   /**
@@ -8461,7 +8667,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (!this.channelSessionSync.isChannelSessionKey(sessionKey)) return;
     if (!this.fullySyncedSessions.has(sessionId)) return;
 
-    void this.reconcileWithHistory(sessionId, sessionKey).catch((err) => {
+    void this.syncSessionHistoryFromGateway(sessionId, sessionKey).catch((err) => {
       console.warn('[ChannelSync] post-turn incremental sync failed for', sessionKey, err);
     });
   }
@@ -8787,7 +8993,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         if (this.reCreatedChannelSessionIds.has(sessionId)) {
           await this.syncLatestChannelUserMessage(sessionId, sessionKey);
         } else {
-          await this.reconcileWithHistory(sessionId, sessionKey);
+          await this.syncSessionHistoryFromGateway(sessionId, sessionKey);
         }
         const afterCount = this.getUserMessageCount(sessionId);
         const newUserMessages = afterCount - beforeCount;
