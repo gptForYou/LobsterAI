@@ -8,7 +8,10 @@ import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import type { CoworkImageAttachmentPreview } from '../../../shared/cowork/imageAttachments';
-import type { CoworkMessageRailIndexItem } from '../../../shared/cowork/rail';
+import {
+  COWORK_RAIL_TOOLTIP_PREVIEW_MAX_LENGTH,
+  type CoworkMessageRailIndexItem,
+} from '../../../shared/cowork/rail';
 import {
   type CoworkSelectedTextSnippet,
   CoworkSelectedTextSource,
@@ -146,6 +149,7 @@ const getRailLineWidth = (
     if (hoverDistance < RAIL_LINE_HOVER_STEPS.length) {
       return RAIL_LINE_HOVER_STEPS[hoverDistance];
     }
+    return RAIL_LINE_DEFAULT_WIDTH;
   }
 
   return index === activeIndex ? RAIL_LINE_ACTIVE_WIDTH : RAIL_LINE_DEFAULT_WIDTH;
@@ -216,18 +220,24 @@ const stripRailLabelMarkdown = (value: string): string => value
   .replace(/```[\s\S]*?```/g, ' ')
   .replace(/`[^`]*`/g, ' ')
   .replace(/<\/?proposed_?plan\b[^>]*>/gi, ' ')
+  .replace(/<\/?proposed_?plan\b\s*/gi, ' ')
   .replace(/[*_~>]/g, '')
   .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
   .replace(/\s+/g, ' ')
+  .trim()
+  .replace(
+    /^(?:#{1,6}\s*)?(?:Summary|Implementation Approach|Key Changes|Validation|Assumptions or Questions)(?:\s*[:：]|\s+|(?=为))\s*/i,
+    '',
+  )
   .trim();
 
-const getRailLabel = (content: string, fallback: string): string => {
+const getRailLabel = (content: string, fallback: string, maxLength = 50): string => {
   const proposedPlan = parseProposedPlanBlock(content);
   const labelSource = [proposedPlan.visibleText, proposedPlan.planText]
     .filter((part): part is string => Boolean(part?.trim()))
     .join('\n');
   const stripped = stripRailLabelMarkdown(labelSource || content);
-  return stripped.slice(0, 50) || fallback;
+  return stripped.slice(0, maxLength) || fallback;
 };
 
 const isAssistantRailContentMessage = (message: CoworkMessage): boolean => (
@@ -271,7 +281,9 @@ const buildRailItems = (
       turnIndex: index,
       absoluteIndex: messageOffsetById.get(primaryMessageId) ?? items.length,
       label: turn.userMessage ? getRailLabel(userContent, `Turn ${index + 1}`) : 'LobsterAI',
-      summary: assistantContent ? getRailLabel(assistantContent, 'LobsterAI') : '',
+      summary: assistantContent
+        ? getRailLabel(assistantContent, 'LobsterAI', COWORK_RAIL_TOOLTIP_PREVIEW_MAX_LENGTH)
+        : '',
       contentLen: userContent.length + assistantContent.length,
       isUser: false,
       isLoaded: true,

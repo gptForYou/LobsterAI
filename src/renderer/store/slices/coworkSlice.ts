@@ -1,6 +1,7 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 import {
+  COWORK_RAIL_TOOLTIP_PREVIEW_MAX_LENGTH,
   type CoworkMessageRailIndexItem,
   getCoworkRailPreview,
 } from '../../../shared/cowork/rail';
@@ -161,6 +162,7 @@ const buildRailIndexItemFromMessage = (
     preview: getCoworkRailPreview(
       message.content,
       message.type === 'user' ? `Turn ${fallbackIndex + 1}` : 'LobsterAI',
+      COWORK_RAIL_TOOLTIP_PREVIEW_MAX_LENGTH,
     ),
     contentLen: message.content.length,
   };

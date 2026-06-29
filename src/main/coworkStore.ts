@@ -15,6 +15,7 @@ import {
   type CoworkForkMode as CoworkForkModeType,
 } from '../shared/cowork/constants';
 import {
+  COWORK_RAIL_TOOLTIP_PREVIEW_MAX_LENGTH,
   type CoworkMessageRailIndexItem,
   getCoworkRailPreview,
 } from '../shared/cowork/rail';
@@ -1656,6 +1657,7 @@ export class CoworkStore {
       preview: getCoworkRailPreview(
         row.preview_content,
         row.type === 'user' ? `Turn ${index + 1}` : 'LobsterAI',
+        COWORK_RAIL_TOOLTIP_PREVIEW_MAX_LENGTH,
       ),
       contentLen: row.content_len,
     }));
