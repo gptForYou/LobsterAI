@@ -133,6 +133,8 @@ const RAIL_LINE_DEFAULT_WIDTH = 8;
 const RAIL_LINE_ACTIVE_WIDTH = 28;
 const RAIL_LINE_HOVER_STEPS = [28, 18, 13, 10] as const;
 const RAIL_LINE_HEIGHT = 3;
+const RAIL_TARGET_RENDER_RELEASE_DELAY = 2400;
+const RAIL_TARGET_SCROLL_RETRY_LIMIT = 6;
 
 const getRailLineWidth = (
   index: number,
@@ -1252,6 +1254,8 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const turnElsCacheRef = useRef<HTMLElement[]>([]);
   const railLinesRef = useRef<HTMLDivElement>(null);
   const [isScrollable, setIsScrollable] = useState(false);
+  const [forcedRailTurnIndex, setForcedRailTurnIndex] = useState<number | null>(null);
+  const forcedRailTurnReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hoveredRailIndex, setHoveredRailIndex] = useState<number | null>(null);
   const [isRailHovered, setIsRailHovered] = useState(false);
   const [railTooltip, setRailTooltip] = useState<{
@@ -2426,6 +2430,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   useEffect(() => {
     return () => {
       if (navigatingTimerRef.current) clearTimeout(navigatingTimerRef.current);
+      if (forcedRailTurnReleaseTimerRef.current) clearTimeout(forcedRailTurnReleaseTimerRef.current);
       clearScrollToBottomSettleTimers();
     };
   }, [clearScrollToBottomSettleTimers]);
@@ -2442,6 +2447,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     loadedRailRangeRef.current = null;
     isLoadingRailTargetRef.current = false;
     if (navigatingTimerRef.current) clearTimeout(navigatingTimerRef.current);
+    if (forcedRailTurnReleaseTimerRef.current) clearTimeout(forcedRailTurnReleaseTimerRef.current);
+    forcedRailTurnReleaseTimerRef.current = null;
+    setForcedRailTurnIndex(null);
     setHoveredRailIndex(null);
   }, [clearScrollToBottomSettleTimers, currentSession?.id]);
 
@@ -2734,10 +2742,20 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     const railCount = railItemCountRef.current;
     if (turnEls.length === 0 || railCount === 0) return;
 
-    // If at very bottom, snap to last rail item
-    if (distanceToBottom <= NAV_BOTTOM_SNAP_THRESHOLD) {
-      const lastRail = loadedRailRangeRef.current?.last ?? railCount - 1;
+    const loadedMessageCount = currentSession?.messages.length ?? 0;
+    const loadedMessageOffset = currentSession?.messagesOffset ?? 0;
+    const totalMessageCount = currentSession?.totalMessages ?? loadedMessageCount;
+    const hasLoadedSessionEnd = loadedMessageOffset + loadedMessageCount >= totalMessageCount;
+
+    // Only snap to the final rail item when the loaded window includes the real
+    // session end. Middle windows can also reach their local bottom, and snapping
+    // there would highlight the window's last rail item instead of the visible turn.
+    if (hasLoadedSessionEnd && distanceToBottom <= NAV_BOTTOM_SNAP_THRESHOLD) {
+      const lastRail = railCount - 1;
       if (currentRailIndexRef.current !== lastRail) {
+        logRailNavigationDiagnostic(
+          `rail highlight snapped to final item ${lastRail} at session bottom; offset=${loadedMessageOffset}; loaded=${loadedMessageCount}; total=${totalMessageCount}.`,
+        );
         currentRailIndexRef.current = lastRail;
         setCurrentRailIndex(lastRail);
       }
@@ -2775,7 +2793,13 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       currentRailIndexRef.current = railIdx;
       setCurrentRailIndex(railIdx);
     }
-  }, [clearScrollToBottomSettleTimers, currentSession?.id, currentSession?.messagesOffset]);
+  }, [
+    clearScrollToBottomSettleTimers,
+    currentSession?.id,
+    currentSession?.messages.length,
+    currentSession?.messagesOffset,
+    currentSession?.totalMessages,
+  ]);
 
   const handleScrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -2907,14 +2931,47 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     const item = railItemsRef.current[railIndex];
     if (!item) return;
 
+    const isNavigatingToLastRailItem = railIndex >= railItemCountRef.current - 1;
+    if (!isNavigatingToLastRailItem) {
+      scrollToBottomIntentRef.current = false;
+      setShouldAutoScroll(false);
+    }
+
     const container = scrollContainerRef.current;
-    const scrollToRailTarget = (targetRailIndex: number, targetItem: RailItem): boolean => {
+    const forceRenderRailTurn = (turnIndex: number): void => {
+      if (turnIndex < 0) return;
+      setForcedRailTurnIndex(turnIndex);
+      if (forcedRailTurnReleaseTimerRef.current) {
+        clearTimeout(forcedRailTurnReleaseTimerRef.current);
+      }
+      forcedRailTurnReleaseTimerRef.current = setTimeout(() => {
+        forcedRailTurnReleaseTimerRef.current = null;
+        setForcedRailTurnIndex(current => (current === turnIndex ? null : current));
+      }, RAIL_TARGET_RENDER_RELEASE_DELAY);
+    };
+
+    const scrollToRailTarget = (targetRailIndex: number, targetItem: RailItem, requireMessageTarget = false): boolean => {
       const latestContainer = scrollContainerRef.current;
       if (!latestContainer) return false;
 
       const messageEl = targetItem.messageId
         ? latestContainer.querySelector<HTMLElement>(`[data-rail-message-id="${CSS.escape(targetItem.messageId)}"]`)
         : null;
+      if (messageEl) {
+        const decision = getRailNavigationDecision(latestContainer, messageEl);
+        if (decision.behavior === 'auto') {
+          logRailNavigationDiagnostic(
+            `rail navigation used instant scroll for item ${targetRailIndex}; reason=${decision.reason}; distance=${Math.round(decision.distance)}px; threshold=${Math.round(decision.threshold)}px.`,
+          );
+        }
+        messageEl.scrollIntoView({ behavior: decision.behavior, block: 'start' });
+        return true;
+      }
+
+      if (requireMessageTarget) {
+        return false;
+      }
+
       const el = messageEl
         ?? latestContainer.querySelector<HTMLElement>(`[data-rail-index="${targetRailIndex}"]`);
       if (el) {
@@ -2951,9 +3008,44 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       return false;
     };
 
+    const scrollToRenderedRailTarget = (targetRailIndex: number, fallbackItem: RailItem, attempt = 0): void => {
+      const latestRailItems = railItemsRef.current;
+      const latestItem = latestRailItems[targetRailIndex] ?? fallbackItem;
+      if (latestItem.turnIndex >= 0) {
+        forceRenderRailTurn(latestItem.turnIndex);
+      }
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (scrollToRailTarget(targetRailIndex, latestItem, true)) return;
+          if (attempt < RAIL_TARGET_SCROLL_RETRY_LIMIT) {
+            scrollToRenderedRailTarget(targetRailIndex, latestItem, attempt + 1);
+            return;
+          }
+          logRailNavigationDiagnostic(
+            `rail navigation could not find rendered message for item ${targetRailIndex} after ${attempt + 1} attempts; falling back to turn container.`,
+          );
+          scrollToRailTarget(targetRailIndex, latestItem);
+        });
+      });
+    };
+
     isNavigatingRef.current = true;
     if (navigatingTimerRef.current) clearTimeout(navigatingTimerRef.current);
     navigatingTimerRef.current = setTimeout(() => { isNavigatingRef.current = false; }, NAV_SCROLL_LOCK_DURATION);
+
+    if (container && scrollToRailTarget(railIndex, item, true)) {
+      currentRailIndexRef.current = railIndex;
+      setCurrentRailIndex(railIndex);
+      return;
+    }
+
+    if (container && item.turnIndex >= 0) {
+      scrollToRenderedRailTarget(railIndex, item);
+      currentRailIndexRef.current = railIndex;
+      setCurrentRailIndex(railIndex);
+      return;
+    }
 
     if (container && scrollToRailTarget(railIndex, item)) {
       currentRailIndexRef.current = railIndex;
@@ -2966,13 +3058,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     isLoadingRailTargetRef.current = true;
     void coworkService.loadMessageWindowAroundIndex(currentSession.id, item.absoluteIndex).then((loaded) => {
       if (!loaded) return;
-      setTimeout(() => {
-        requestAnimationFrame(() => {
-          const latestRailItems = railItemsRef.current;
-          const latestItem = latestRailItems[railIndex] ?? item;
-          scrollToRailTarget(railIndex, latestItem);
-        });
-      }, 0);
+      scrollToRenderedRailTarget(railIndex, item);
     }).finally(() => {
       isLoadingRailTargetRef.current = false;
     });
@@ -3170,24 +3256,58 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     return () => cancelAnimationFrame(frameId);
   }, [isScrollable, railItems.length, turns]);
 
-  // Scroll rail lines container to keep active item visible (without affecting page scroll)
-  useEffect(() => {
+  const alignActiveRailItem = useCallback(() => {
     const container = railLinesRef.current;
     if (!container || currentRailIndex < 0) return;
     const activeEl = container.children[currentRailIndex] as HTMLElement | undefined;
     if (!activeEl) return;
-    // Manual scroll calculation to avoid scrollIntoView bubbling to parent scrollable
-    const elTop = activeEl.offsetTop;
-    const elBottom = elTop + activeEl.offsetHeight;
-    if (elTop < container.scrollTop) {
-      container.scrollTop = elTop;
-    } else if (elBottom > container.scrollTop + container.clientHeight) {
-      container.scrollTop = elBottom - container.clientHeight;
+
+    if (currentRailIndex <= 0) {
+      container.scrollTop = 0;
+      return;
+    }
+    if (currentRailIndex >= railItemCountRef.current - 1) {
+      container.scrollTop = container.scrollHeight;
+      return;
+    }
+
+    // Use viewport-relative rects instead of offsetTop: the rail list is an
+    // overflow container whose layout can change after lazy pagination prepends.
+    const containerRect = container.getBoundingClientRect();
+    const activeRect = activeEl.getBoundingClientRect();
+    if (activeRect.top < containerRect.top) {
+      container.scrollTop -= containerRect.top - activeRect.top;
+    } else if (activeRect.bottom > containerRect.bottom) {
+      container.scrollTop += activeRect.bottom - containerRect.bottom;
     }
   }, [currentRailIndex]);
 
+  // Scroll rail lines container to keep active item visible (without affecting page scroll)
+  useEffect(() => {
+    let secondFrameId: number | null = null;
+    const firstFrameId = requestAnimationFrame(() => {
+      alignActiveRailItem();
+      secondFrameId = requestAnimationFrame(() => {
+        alignActiveRailItem();
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrameId);
+      if (secondFrameId !== null) cancelAnimationFrame(secondFrameId);
+    };
+  }, [
+    alignActiveRailItem,
+    currentSession?.messages.length,
+    currentSession?.messagesOffset,
+    isScrollable,
+    railItems.length,
+  ]);
+
   // Auto scroll to bottom when new messages arrive or content updates (streaming)
   useEffect(() => {
+    if (isNavigatingRef.current) {
+      return;
+    }
     if (!shouldAutoScroll) {
       return;
     }
@@ -3286,7 +3406,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       const showTypingIndicator = isStreaming && isLastTurn && !hasRenderableAssistantContent(turn);
       const showAssistantBlock = turn.assistantItems.length > 0 || showTypingIndicator;
       // Always render last 3 turns (needed for streaming, auto-scroll, and smooth UX)
-      const alwaysRender = index >= turns.length - 3;
+      const alwaysRender = index >= turns.length - 3 || index === forcedRailTurnIndex;
 
       // Compute one rail index per conversation turn (must match grouped rail item logic).
       const hasAssistantContent = turn.assistantItems.some(

@@ -286,6 +286,10 @@ tooltip 展示需要类似 IDE/Codex 小地图预览：
 - 鼠标 hover 某个 item 时，以 hover item 为中心，向上下邻近若干条逐步缩短，形成阶梯视觉。
 - hover 阶梯只影响视觉宽度和颜色，不改变 rail item 数据、tooltip 数据、点击定位或懒加载逻辑。
 - 轨道整体保持内容高度自适应，仅受最大高度限制；item 过多时中间轨道列表内部滚动，箭头不被撑到上下两端。
+- 点击 rail item 定位到懒渲染占位 turn 时，应临时强制渲染目标 turn 并重试定位真实消息节点，避免页面跳到空白占位区域后需要用户手动滚动才展示内容。
+- 只有当前加载窗口包含会话真实末尾时，滚到底部才允许 rail 高亮吸附到最终 item；中间分页窗口的局部底部仍应按当前可见 turn 计算高亮。
+- rail 导航到非末尾 item 时必须暂停自动滚底状态，避免目标窗口加载后被 auto-scroll effect 覆盖回最后一条高亮。
+- 消息列表滚动或 prepend 旧消息导致 rail item 布局变化时，右侧 rail 容器应自动滚动，保持当前高亮 item 在 rail 可视范围内；高亮为第一条时 rail 必须回到顶部。
 
 分组只发生在 renderer 侧，不改变主进程轻量索引接口。主进程仍返回单条消息级别的轻量 preview，以避免一次性传输完整历史正文。
 
@@ -394,7 +398,11 @@ setMessageWindow({
 10. 合并后的 rail item 点击仍能加载并定位到该轮起始消息，不受 tool/system 消息夹杂影响。
 11. 轨道默认短线宽度统一；hover 时邻近 item 呈现从中心向外递减的阶梯宽度。
 12. 轨道高度保持内容自适应，仅超出最大高度时滚动；上下箭头应靠近轨道内容。
-13. 目标实现后，相关 TypeScript 文件通过 changed-file ESLint：
+13. 点击任意已加载或刚加载的 rail item 后，目标消息内容应直接可见，不应停留在 LazyRenderTurn 占位空白区域。
+14. 滚到中间分页窗口底部时，rail 高亮应对应当前可见 turn；只有会话真实底部才高亮最终 item。
+15. 首次进入会话后点击最上方 rail item，应滚到第一条消息并高亮第一条，不应被自动滚底逻辑恢复到最后一条。
+16. 首次进入会话后连续向上滚动并触发多次 prepend，消息到达顶部时右侧 rail 应自动滚动到顶部并展示第一条高亮 item，不需要用户手动滚动 rail。
+17. 目标实现后，相关 TypeScript 文件通过 changed-file ESLint：
 
 ```bash
 npx eslint --ext ts,tsx --report-unused-disable-directives --max-warnings 0 <touched files>
