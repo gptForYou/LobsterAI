@@ -12,6 +12,10 @@ import {
 } from '../../../common/coworkSystemMessages';
 import type { OpenClawSessionPatch } from '../../../common/openclawSession';
 import {
+  type CoworkGoal,
+  normalizeCoworkGoal,
+} from '../../../shared/cowork/goal';
+import {
   buildCoworkImageAttachmentPreviews,
   formatCoworkImageAttachmentLimit,
   validateCoworkImageAttachmentSize,
@@ -1889,6 +1893,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   // Authoritative contextTokens from sessions.list (per sessionKey).
   // Updated by pollChannelSessions and refreshSessionContextTokens.
   private sessionContextTokensCache: Map<string, number> = new Map();
+  private readonly goalSnapshotBySessionId = new Map<string, string>();
   private readonly contextUsageInFlightBySession = new Map<string, Promise<CoworkContextUsage | null>>();
   private readonly contextUsageListInFlight = new Map<string, Promise<Record<string, unknown>[]>>();
   private gatewayRpcHealth: GatewayRpcHealth = {
@@ -2531,6 +2536,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (sessionKey && typeof contextTokens === 'number') {
       this.sessionContextTokensCache.set(sessionKey, contextTokens);
     }
+    this.syncGoalFromSessionRow(row);
 
     return {
       sessionId,
@@ -2552,6 +2558,33 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       ...(typeof row.model === 'string' ? { model: row.model } : {}),
       updatedAt: Date.now(),
     };
+  }
+
+  private syncGoalFromSessionRow(row: Record<string, unknown>): void {
+    if (!Object.prototype.hasOwnProperty.call(row, 'goal')) return;
+    const sessionKey = typeof row.key === 'string' ? row.key.trim() : '';
+    if (!sessionKey) return;
+    const sessionId = this.resolveSessionIdBySessionKey(sessionKey)
+      ?? this.resolveLocalSessionIdFromGatewaySessionKey(sessionKey);
+    if (!sessionId) return;
+
+    const goal = normalizeCoworkGoal(row.goal);
+    this.emitGoalUpdateIfChanged(sessionId, goal);
+  }
+
+  private emitGoalUpdateIfChanged(sessionId: string, goal: CoworkGoal | null): void {
+    const snapshot = goal ? JSON.stringify(goal) : '';
+    if (this.goalSnapshotBySessionId.get(sessionId) === snapshot) return;
+    this.goalSnapshotBySessionId.set(sessionId, snapshot);
+    try {
+      this.store.updateSession(sessionId, { goal }, { touchUpdatedAt: false });
+    } catch (error) {
+      console.warn(`[OpenClawRuntime] failed to persist goal display cache for session ${sessionId}; continuing with streamed update.`, error);
+    }
+    console.debug(
+      `[OpenClawRuntime] goal update for session ${sessionId}: status=${goal?.status ?? 'none'}, hasGoal=${goal ? 'yes' : 'no'}.`,
+    );
+    this.emit('goalUpdate', sessionId, goal);
   }
 
   async getContextUsage(sessionId: string): Promise<CoworkContextUsage | null> {
@@ -3206,6 +3239,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         if (isRecord(row) && typeof (row as Record<string, unknown>).contextTokens === 'number') {
           this.sessionContextTokensCache.set(key, (row as Record<string, unknown>).contextTokens as number);
         }
+        if (isRecord(row)) {
+          this.syncGoalFromSessionRow(row as Record<string, unknown>);
+        }
         // Skip heartbeat-originated sessions (origin.label === 'heartbeat')
         if (isRecord(row)) {
           const rowOrigin = (row as Record<string, unknown>).origin;
@@ -3225,6 +3261,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         channelCount++;
         // Use resolveOrCreateSession so new channel sessions are auto-created
         const sessionId = this.channelSessionSync.resolveOrCreateSession(key);
+        if (sessionId && isRecord(row) && Object.prototype.hasOwnProperty.call(row, 'goal')) {
+          this.emitGoalUpdateIfChanged(sessionId, normalizeCoworkGoal((row as Record<string, unknown>).goal));
+        }
         if (sessionId && !this.knownChannelSessionIds.has(sessionId)) {
           this.knownChannelSessionIds.add(sessionId);
           this.rememberSessionKey(sessionId, key);
@@ -4294,6 +4333,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.gatewayReadyPromise = null;
     this.channelSessionSync?.clearCache();
     this.sessionModelPatchStateBySession.clear();
+    this.goalSnapshotBySessionId.clear();
     this.contextUsageInFlightBySession.clear();
     this.contextUsageListInFlight.clear();
     this.resetGatewayRpcHealth();
@@ -8713,6 +8753,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.gatewayHistoryCountBySession.delete(sessionId);
     this.latestTurnTokenBySession.delete(sessionId);
     this.stoppedSessions.delete(sessionId);
+    this.goalSnapshotBySessionId.delete(sessionId);
 
     // Clean up active turn and related run-id mappings
     this.cleanupSessionTurn(sessionId);

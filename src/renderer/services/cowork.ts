@@ -12,6 +12,7 @@ import {
   type CoworkContextUsageRefreshMode as CoworkContextUsageRefreshModeType,
   CoworkContextUsageSource,
 } from '../../shared/cowork/constants';
+import { normalizeCoworkGoal } from '../../shared/cowork/goal';
 import type { CoworkMessageRailIndexItem } from '../../shared/cowork/rail';
 import { store } from '../store';
 import {
@@ -39,6 +40,7 @@ import {
   setSessions,
   setStreaming,
   updateMessageContent,
+  updateSessionGoal,
   updateSessionPinned,
   updateSessionStatus,
   updateSessionTitle,
@@ -252,6 +254,17 @@ class CoworkService {
     });
     if (contextUsageCleanup) {
       this.streamListenerCleanups.push(contextUsageCleanup);
+    }
+
+    const goalCleanup = cowork.onStreamGoal?.(({ sessionId, goal }) => {
+      const normalizedGoal = normalizeCoworkGoal(goal);
+      console.debug(
+        `[CoworkGoal] stream update received for session ${sessionId}: status=${normalizedGoal?.status ?? 'none'}, hasGoal=${normalizedGoal ? 'yes' : 'no'}.`,
+      );
+      store.dispatch(updateSessionGoal({ sessionId, goal: normalizedGoal }));
+    });
+    if (goalCleanup) {
+      this.streamListenerCleanups.push(goalCleanup);
     }
 
     const contextMaintenanceCleanup = cowork.onStreamContextMaintenance?.(({ sessionId, active }) => {

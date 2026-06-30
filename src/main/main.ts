@@ -2236,6 +2236,18 @@ const bindCoworkRuntimeForwarder = (): void => {
     });
   });
 
+  runtime.on('goalUpdate', (sessionId: string, goal: unknown) => {
+    const windows = BrowserWindow.getAllWindows();
+    windows.forEach(win => {
+      if (win.isDestroyed()) return;
+      try {
+        win.webContents.send(CoworkIpcChannel.StreamGoal, { sessionId, goal });
+      } catch (error) {
+        console.error('[CoworkRuntime] failed to forward goal update:', error);
+      }
+    });
+  });
+
   runtime.on('contextMaintenance', (sessionId: string, active: boolean) => {
     const windows = BrowserWindow.getAllWindows();
     console.log(

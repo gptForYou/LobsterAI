@@ -1,4 +1,5 @@
 import type { OpenClawSessionPatch } from '../../../common/openclawSession';
+import type { CoworkGoal } from '../../../shared/cowork/goal';
 import type { CoworkImageAttachmentPayload } from '../../../shared/cowork/imageAttachments';
 import type { CoworkSelectedTextSnippet } from '../../../shared/cowork/selectedText';
 import type {
@@ -36,6 +37,7 @@ export interface CoworkRuntimeEvents {
   message: (sessionId: string, message: CoworkMessage, beforeMessageId?: string) => void;
   messageUpdate: (sessionId: string, messageId: string, content: string, metadata?: Record<string, unknown>) => void;
   sessionStatus: (sessionId: string, status: CoworkSessionStatus) => void;
+  goalUpdate: (sessionId: string, goal: CoworkGoal | null) => void;
   contextUsageUpdate: (sessionId: string, usage: CoworkContextUsage) => void;
   contextMaintenance: (sessionId: string, active: boolean) => void;
   permissionRequest: (sessionId: string, request: PermissionRequest) => void;

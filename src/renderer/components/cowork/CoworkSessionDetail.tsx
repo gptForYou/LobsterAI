@@ -81,6 +81,7 @@ import {
   bucketLength,
   reportConversationNavigationAction,
 } from './conversationAnalytics';
+import CoworkGoalControl from './CoworkGoalControl';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import LazyRenderTurn, { clearHeightCache } from './LazyRenderTurn';
 import {
@@ -1136,6 +1137,18 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
   // Clear lazy-render height cache when session changes
   const sessionId = currentSession?.id;
+  const handleGoalCommand = useCallback((command: string) => {
+    if (!currentSession?.id || isSessionBusy || currentSession.status === CoworkSessionStatusValue.Running) return;
+    const goalAction = command.split(/\s+/, 2)[1] ?? 'unknown';
+    console.debug(`[CoworkGoal] dispatching goal command action=${goalAction} for session ${currentSession.id}.`);
+    void Promise.resolve(onContinue(command)).catch((error) => {
+      console.warn(`[CoworkGoal] goal command action=${goalAction} failed for session ${currentSession.id}.`, error);
+    }).finally(() => {
+      if (currentSession.id) {
+        void coworkService.refreshContextUsage(currentSession.id, { notifyCompaction: false });
+      }
+    });
+  }, [currentSession?.id, currentSession?.status, isSessionBusy, onContinue]);
   const latestProposedPlan = useMemo(
     () => currentSession ? findLatestProposedPlan(currentSession.messages) : null,
     [currentSession],
@@ -4451,34 +4464,43 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             contextAgentId={currentSession?.agentId}
             sessionId={currentSession?.id}
             contextUsageControl={(
-              <div ref={compactConfirmRef} className="relative inline-flex flex-shrink-0">
-                <ContextUsageIndicator
-                  usage={contextUsage}
-                  compacting={isContextBusy}
-                  disabled={remoteManaged || !currentSession?.id}
-                  onCompact={handleCompactContext}
-                  showTooltip={!showCompactConfirm}
-                  active={showCompactConfirm}
-                  className="-mr-1"
-                />
-                {showCompactConfirm && (
-                  <div className="absolute bottom-full left-1/2 z-50 mb-1.5 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-border bg-surface p-1.5 shadow-popover">
-                    <button
-                      type="button"
-                      onClick={handleCancelCompactContext}
-                      className="whitespace-nowrap rounded-md bg-surface-raised px-2.5 py-1 text-center text-[11px] font-medium leading-4 text-secondary transition-colors hover:text-foreground"
-                    >
-                      {i18nService.t('cancel')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleConfirmCompactContext}
-                      className="whitespace-nowrap rounded-md bg-primary px-2.5 py-1 text-center text-[11px] font-semibold leading-4 text-white transition-colors hover:bg-primary-hover"
-                    >
-                      {i18nService.t('coworkContextCompactConfirmActionShort')}
-                    </button>
-                  </div>
+              <div className="flex min-w-0 items-center gap-2">
+                {!remoteManaged && currentSession?.id && (
+                  <CoworkGoalControl
+                    goal={currentSession.goal}
+                    disabled={isSessionBusy || currentSession.status === CoworkSessionStatusValue.Running}
+                    onCommand={handleGoalCommand}
+                  />
                 )}
+                <div ref={compactConfirmRef} className="relative inline-flex flex-shrink-0">
+                  <ContextUsageIndicator
+                    usage={contextUsage}
+                    compacting={isContextBusy}
+                    disabled={remoteManaged || !currentSession?.id}
+                    onCompact={handleCompactContext}
+                    showTooltip={!showCompactConfirm}
+                    active={showCompactConfirm}
+                    className="-mr-1"
+                  />
+                  {showCompactConfirm && (
+                    <div className="absolute bottom-full left-1/2 z-50 mb-1.5 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-border bg-surface p-1.5 shadow-popover">
+                      <button
+                        type="button"
+                        onClick={handleCancelCompactContext}
+                        className="whitespace-nowrap rounded-md bg-surface-raised px-2.5 py-1 text-center text-[11px] font-medium leading-4 text-secondary transition-colors hover:text-foreground"
+                      >
+                        {i18nService.t('cancel')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleConfirmCompactContext}
+                        className="whitespace-nowrap rounded-md bg-primary px-2.5 py-1 text-center text-[11px] font-semibold leading-4 text-white transition-colors hover:bg-primary-hover"
+                      >
+                        {i18nService.t('coworkContextCompactConfirmActionShort')}
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           />

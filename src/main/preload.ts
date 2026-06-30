@@ -501,6 +501,11 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.on('cowork:stream:contextUsage', handler);
       return () => ipcRenderer.removeListener('cowork:stream:contextUsage', handler);
     },
+    onStreamGoal: (callback: (data: { sessionId: string; goal: any }) => void) => {
+      const handler = (_event: any, data: { sessionId: string; goal: any }) => callback(data);
+      ipcRenderer.on(CoworkIpcChannel.StreamGoal, handler);
+      return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamGoal, handler);
+    },
     onStreamContextMaintenance: (
       callback: (data: { sessionId: string; active: boolean }) => void,
     ) => {
