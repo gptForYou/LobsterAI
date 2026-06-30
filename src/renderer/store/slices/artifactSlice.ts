@@ -3,10 +3,10 @@ import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 import {
   dedupeArtifactsForDisplay,
   dedupeArtifactsWithinMessages,
+  getLocalServicePortIdentityKey,
   normalizeFilePathForDedup,
-  normalizeLocalServiceUrlForDedup,
-  normalizeProjectDirectoryForDedup,
   resolveArtifactIdForDisplay,
+  shouldPreferArtifactForDisplay,
 } from '../../services/artifactParser';
 import { type Artifact, ArtifactTypeValue } from '../../types/artifact';
 import type { RootState } from '../index';
@@ -34,6 +34,12 @@ export interface ArtifactPreviewTab {
   artifactId: string;
   contentView: ArtifactContentView;
   openedAt: number;
+}
+
+interface AddArtifactPayload {
+  sessionId: string;
+  artifact: Artifact;
+  defaultProjectDirectory?: string;
 }
 
 interface ArtifactState {
@@ -161,8 +167,8 @@ const artifactSlice = createSlice({
       }
     },
 
-    addArtifact(state, action: PayloadAction<{ sessionId: string; artifact: Artifact }>) {
-      const { sessionId, artifact } = action.payload;
+    addArtifact(state, action: PayloadAction<AddArtifactPayload>) {
+      const { sessionId, artifact, defaultProjectDirectory } = action.payload;
       if (!state.artifactsBySession[sessionId]) {
         state.artifactsBySession[sessionId] = [];
       }
@@ -174,24 +180,18 @@ const artifactSlice = createSlice({
         }
       } else {
         if (artifact.type === ArtifactTypeValue.LocalService) {
-          const normalizedUrl = normalizeLocalServiceUrlForDedup(artifact.url || artifact.content);
-          const normalizedProjectDirectory = artifact.localService?.projectDirectory
-            ? normalizeProjectDirectoryForDedup(artifact.localService.projectDirectory)
-            : '';
+          const localServicePortKey = getLocalServicePortIdentityKey(artifact.url || artifact.content);
           const dupIndex = state.artifactsBySession[sessionId].findIndex(
             a => isSameMessageArtifact(a, artifact) &&
               a.type === ArtifactTypeValue.LocalService &&
-              normalizeLocalServiceUrlForDedup(a.url || a.content) === normalizedUrl &&
-              (
-                a.localService?.projectDirectory
-                  ? normalizeProjectDirectoryForDedup(a.localService.projectDirectory)
-                  : ''
-              ) === normalizedProjectDirectory
+              getLocalServicePortIdentityKey(a.url || a.content) === localServicePortKey
           );
           if (dupIndex >= 0) {
             const old = state.artifactsBySession[sessionId][dupIndex];
-            state.artifactsBySession[sessionId][dupIndex] = artifact;
-            replacePreviewTabArtifactId(state, sessionId, old.id, artifact.id);
+            if (shouldPreferArtifactForDisplay(artifact, old, { defaultProjectDirectory })) {
+              state.artifactsBySession[sessionId][dupIndex] = artifact;
+              replacePreviewTabArtifactId(state, sessionId, old.id, artifact.id);
+            }
             return;
           }
         }

@@ -101,6 +101,7 @@ interface BrowserLocalServiceContext {
   url: string;
   origin: string;
   projectDirectory?: string;
+  projectCandidates?: NonNullable<Artifact['localService']>['projectCandidates'];
 }
 
 const AUTO_SCROLL_THRESHOLD = 120;
@@ -1195,8 +1196,11 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     sessionId ? state.artifact.artifactsBySession[sessionId] ?? EMPTY_ARTIFACTS : EMPTY_ARTIFACTS
   );
   const sessionArtifacts = useMemo(
-    () => dedupeArtifactsForDisplay(rawSessionArtifacts),
-    [rawSessionArtifacts],
+    () => dedupeArtifactsForDisplay(
+      rawSessionArtifacts,
+      { defaultProjectDirectory: currentSession?.cwd },
+    ),
+    [currentSession?.cwd, rawSessionArtifacts],
   );
   const artifactPreviewTabs = useSelector((state: RootState) =>
     sessionId ? state.artifact.previewTabsBySession[sessionId] ?? EMPTY_PREVIEW_TABS : EMPTY_PREVIEW_TABS
@@ -1556,6 +1560,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       url,
       origin,
       ...(projectDirectory ? { projectDirectory } : {}),
+      ...(artifact.localService?.projectCandidates?.length
+        ? { projectCandidates: artifact.localService.projectCandidates }
+        : {}),
     });
     handleBrowserPreviewAddressChange(url);
     handleBrowserPreviewUrlChange(url);
@@ -1983,7 +1990,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       const cwd = currentSession.cwd;
       for (const artifact of detected) {
         if (artifact.type === ArtifactTypeValue.LocalService) {
-          dispatch(addArtifact({ sessionId, artifact }));
+          dispatch(addArtifact({ sessionId, artifact, defaultProjectDirectory: cwd }));
         }
       }
 

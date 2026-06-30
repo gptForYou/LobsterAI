@@ -1,11 +1,14 @@
 import { describe, expect, test } from 'vitest';
 
+import { ShareDeploymentCandidateSource } from '../../shared/shareDeployment/constants';
 import {
   dedupeArtifactsForDisplay,
   hasToolResultMediaAssets,
   normalizeFilePathForDedup,
   parseFileLinksFromMessage,
-  parseFilePathsFromText, parseLocalServiceUrlsFromText, parseMediaTokensFromText,
+  parseFilePathsFromText,
+  parseLocalServiceUrlsFromText,
+  parseMediaTokensFromText,
   parseToolArtifact,
   parseToolResultMediaArtifacts,
   shouldParseFilePathsFromToolResult,
@@ -383,10 +386,10 @@ describe('dedupeArtifactsForDisplay', () => {
     expect(artifacts[0].id).toBe('system-service');
   });
 
-  test('keeps local service artifacts with the same URL from different projects', () => {
+  test('keeps one local service artifact per port and prefers detected project metadata', () => {
     const artifacts = dedupeArtifactsForDisplay([
       {
-        id: 'project-a-service',
+        id: 'default-service',
         messageId: 'assistant-msg',
         sessionId: 'sess1',
         type: 'local-service',
@@ -396,28 +399,56 @@ describe('dedupeArtifactsForDisplay', () => {
         localService: {
           url: 'http://localhost:3000',
           origin: 'http://localhost:3000',
-          projectDirectory: '/Users/admin/project/a',
+          projectDirectory: '/Users/admin/project',
+        },
+        createdAt: 2,
+      },
+      {
+        id: 'project-service',
+        messageId: 'system-msg',
+        sessionId: 'sess1',
+        type: 'local-service',
+        title: 'localhost:3000',
+        content: 'http://127.0.0.1:3000/app',
+        url: 'http://127.0.0.1:3000/app',
+        localService: {
+          url: 'http://127.0.0.1:3000/app',
+          origin: 'http://127.0.0.1:3000',
+          projectDirectory: '/Users/admin/project/ai-datacenter',
         },
         createdAt: 1,
       },
+    ], { defaultProjectDirectory: '/Users/admin/project' });
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].id).toBe('project-service');
+  });
+
+  test('keeps local service artifacts on different ports', () => {
+    const artifacts = dedupeArtifactsForDisplay([
       {
-        id: 'project-b-service',
-        messageId: 'system-msg',
+        id: 'service-3000',
+        messageId: 'assistant-msg',
         sessionId: 'sess1',
         type: 'local-service',
         title: 'localhost:3000',
         content: 'http://localhost:3000',
         url: 'http://localhost:3000',
-        localService: {
-          url: 'http://localhost:3000',
-          origin: 'http://localhost:3000',
-          projectDirectory: '/Users/admin/project/b',
-        },
+        createdAt: 1,
+      },
+      {
+        id: 'service-5174',
+        messageId: 'system-msg',
+        sessionId: 'sess1',
+        type: 'local-service',
+        title: 'localhost:5174',
+        content: 'http://localhost:5174',
+        url: 'http://localhost:5174',
         createdAt: 2,
       },
     ]);
 
-    expect(artifacts).toHaveLength(2);
+    expect(artifacts.map(artifact => artifact.id)).toEqual(['service-3000', 'service-5174']);
   });
 });
 
@@ -444,7 +475,7 @@ describe('parseLocalServiceUrlsFromText', () => {
     expect(artifacts).toHaveLength(1);
   });
 
-  test('attaches project directory metadata', () => {
+  test('does not attach session cwd as project directory when no project is detected', () => {
     const artifacts = parseLocalServiceUrlsFromText(
       '服务已启动：http://localhost:3000',
       'msg1',
@@ -455,7 +486,6 @@ describe('parseLocalServiceUrlsFromText', () => {
     expect(artifacts[0].localService).toEqual({
       url: 'http://localhost:3000',
       origin: 'http://localhost:3000',
-      projectDirectory: '/Users/admin/project/fanren-vote',
     });
   });
 
@@ -515,6 +545,55 @@ describe('parseLocalServiceUrlsFromText', () => {
     );
   });
 
+  test('extracts project directory from project located markdown file link', () => {
+    const content = [
+      '网站已全部完成！ 项目位于 [chinese-navy-site](file:///Users/admin/lobsterai/project/chinese-navy-site)，本地服务运行在 `http://localhost:8765`。',
+      '',
+      '**文件结构：**',
+      '- [index.html](file:///Users/admin/lobsterai/project/chinese-navy-site/index.html) — 页面结构',
+    ].join('\n');
+    const artifacts = parseLocalServiceUrlsFromText(
+      content,
+      'msg1',
+      'sess1',
+      { projectDirectory: '/Users/admin/lobsterai/project' },
+    );
+
+    expect(artifacts[0].localService?.projectDirectory).toBe(
+      '/Users/admin/lobsterai/project/chinese-navy-site',
+    );
+    expect(artifacts[0].localService?.projectCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          directory: '/Users/admin/lobsterai/project/chinese-navy-site',
+          source: ShareDeploymentCandidateSource.TextLabeledPath,
+        }),
+      ]),
+    );
+  });
+
+  test('derives project directory from common parent of file links', () => {
+    const content = [
+      '本地服务运行在 http://localhost:8765',
+      '- [index.html](file:///Users/admin/lobsterai/project/chinese-navy-site/index.html)',
+      '- [style.css](file:///Users/admin/lobsterai/project/chinese-navy-site/styles/style.css)',
+      '- [app.js](file:///Users/admin/lobsterai/project/chinese-navy-site/scripts/app.js)',
+    ].join('\n');
+    const artifacts = parseLocalServiceUrlsFromText(content, 'msg1', 'sess1');
+
+    expect(artifacts[0].localService?.projectDirectory).toBe(
+      '/Users/admin/lobsterai/project/chinese-navy-site',
+    );
+    expect(artifacts[0].localService?.projectCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          directory: '/Users/admin/lobsterai/project/chinese-navy-site',
+          source: ShareDeploymentCandidateSource.TextCommonParent,
+        }),
+      ]),
+    );
+  });
+
   test('ignores malformed labeled project directory markers', () => {
     const content = [
       '项目路径： [',
@@ -527,9 +606,7 @@ describe('parseLocalServiceUrlsFromText', () => {
       { projectDirectory: '/Users/admin/lobsterai/project/fanren' },
     );
 
-    expect(artifacts[0].localService?.projectDirectory).toBe(
-      '/Users/admin/lobsterai/project/fanren',
-    );
+    expect(artifacts[0].localService?.projectDirectory).toBeUndefined();
   });
 
   test('ignores remote URLs', () => {

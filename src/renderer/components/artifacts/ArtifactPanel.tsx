@@ -14,7 +14,10 @@ import {
 import type { LocalWebService } from '@shared/localWebServices/constants';
 import {
   ShareDeploymentCandidateSource,
+  ShareDeploymentKind,
+  ShareDeploymentPackageManager,
   type ShareDeploymentProjectAnalysis,
+  type ShareDeploymentProjectCandidate,
   type ShareDeploymentRecord,
   ShareDeploymentStatus,
 } from '@shared/shareDeployment/constants';
@@ -242,6 +245,7 @@ interface BrowserLocalServiceContext {
   url: string;
   origin: string;
   projectDirectory?: string;
+  projectCandidates?: ShareDeploymentProjectCandidate[];
 }
 
 function isNodeDeploymentDialogForLocalService(
@@ -346,38 +350,83 @@ function getLegacyNodeDeploymentProjectDirectoryStorageKey(
   return `${NODE_DEPLOYMENT_PROJECT_DIRECTORY_STORAGE_PREFIX}${sessionId}:${localServiceUrl}`;
 }
 
+interface NodeDeploymentProjectDirectoryCache {
+  projectDirectory: string;
+  source?: ShareDeploymentProjectCandidate['source'];
+  updatedAt?: number;
+}
+
+function parseNodeDeploymentProjectDirectoryCache(value: string | null): NodeDeploymentProjectDirectoryCache | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<NodeDeploymentProjectDirectoryCache>;
+    if (typeof parsed.projectDirectory === 'string' && parsed.projectDirectory.trim()) {
+      return {
+        projectDirectory: parsed.projectDirectory.trim(),
+        source: parsed.source,
+        updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : undefined,
+      };
+    }
+  } catch {
+    // Older versions stored the directory directly.
+  }
+  return {
+    projectDirectory: trimmed,
+  };
+}
+
+function readNodeDeploymentProjectDirectoryCandidate(
+  sessionId: string,
+  localServiceUrl?: string,
+): ShareDeploymentProjectCandidate | undefined {
+  if (!localServiceUrl || typeof window === 'undefined') return undefined;
+  try {
+    const value = window.localStorage
+      .getItem(getNodeDeploymentProjectDirectoryStorageKey(sessionId, localServiceUrl));
+    const legacyValue = window.localStorage
+      .getItem(getLegacyNodeDeploymentProjectDirectoryStorageKey(sessionId, localServiceUrl));
+    const cache = parseNodeDeploymentProjectDirectoryCache(value) ??
+      parseNodeDeploymentProjectDirectoryCache(legacyValue);
+    if (!cache?.projectDirectory) return undefined;
+    return {
+      directory: cache.projectDirectory,
+      source: ShareDeploymentCandidateSource.Cache,
+      confidence: 35,
+      reason: 'Matched the previously used project directory for this local service origin.',
+      detectedAt: cache.updatedAt,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function readNodeDeploymentProjectDirectory(
   sessionId: string,
   localServiceUrl?: string,
 ): string | undefined {
-  if (!localServiceUrl || typeof window === 'undefined') return undefined;
-  try {
-    const value = window.localStorage
-      .getItem(getNodeDeploymentProjectDirectoryStorageKey(sessionId, localServiceUrl))
-      ?.trim();
-    if (value) return value;
-
-    return window.localStorage
-      .getItem(getLegacyNodeDeploymentProjectDirectoryStorageKey(sessionId, localServiceUrl))
-      ?.trim() || undefined;
-  } catch {
-    return undefined;
-  }
+  return readNodeDeploymentProjectDirectoryCandidate(sessionId, localServiceUrl)?.directory;
 }
 
 function writeNodeDeploymentProjectDirectory(
   sessionId: string,
   localServiceUrl: string,
   projectDirectory?: string,
+  source: ShareDeploymentProjectCandidate['source'] = ShareDeploymentCandidateSource.Manual,
 ): void {
   const value = projectDirectory?.trim();
   if (!value || typeof window === 'undefined') return;
   try {
+    const cacheValue = JSON.stringify({
+      projectDirectory: value,
+      source,
+      updatedAt: Date.now(),
+    } satisfies NodeDeploymentProjectDirectoryCache);
     const key = getNodeDeploymentProjectDirectoryStorageKey(sessionId, localServiceUrl);
-    window.localStorage.setItem(key, value);
+    window.localStorage.setItem(key, cacheValue);
     const legacyKey = getLegacyNodeDeploymentProjectDirectoryStorageKey(sessionId, localServiceUrl);
     if (legacyKey !== key) {
-      window.localStorage.setItem(legacyKey, value);
+      window.localStorage.setItem(legacyKey, cacheValue);
     }
   } catch {
     // Local cache is best-effort only.
@@ -1104,11 +1153,24 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   const contextLocalServiceOrigin = browserLocalServiceContext
     ? normalizeLocalServiceOriginForCompare(browserLocalServiceContext.origin || browserLocalServiceContext.url)
     : '';
+  const browserLocalServiceContextMatches = Boolean(
+    browserLocalServiceOrigin &&
+      browserLocalServiceOrigin === contextLocalServiceOrigin,
+  );
   const browserLocalServiceProjectDirectory = browserLocalServiceOrigin &&
-    browserLocalServiceOrigin === contextLocalServiceOrigin
+    browserLocalServiceContextMatches
     ? browserLocalServiceContext?.projectDirectory?.trim() ||
       readNodeDeploymentProjectDirectory(sessionId, browserLocalServiceUrl)
     : readNodeDeploymentProjectDirectory(sessionId, browserLocalServiceUrl);
+  const browserLocalServiceProjectCandidates = useMemo(
+    () => browserLocalServiceContextMatches
+      ? browserLocalServiceContext?.projectCandidates ?? []
+      : [],
+    [
+      browserLocalServiceContext?.projectCandidates,
+      browserLocalServiceContextMatches,
+    ],
+  );
   const selectedNodeDeploymentLookupKey = browserLocalServiceUrl
     ? getNodeDeploymentLookupKey(sessionId, browserLocalServiceUrl, browserLocalServiceProjectDirectory)
     : undefined;
@@ -1247,6 +1309,9 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
         origin: normalizeLocalServiceOriginForCompare(service.url),
         ...(service.projectDirectory?.trim()
           ? { projectDirectory: service.projectDirectory.trim() }
+          : {}),
+        ...(service.projectCandidates?.length
+          ? { projectCandidates: service.projectCandidates }
           : {}),
       });
     },
@@ -2012,9 +2077,9 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
       analysis,
       accessMode: HtmlShareAccessMode.Code,
       nodeVersion: '20',
-      installCommand: analysis?.installCommand || 'npm ci',
-      buildCommand: analysis?.buildCommand || '',
-      startCommand: analysis?.startCommand || '',
+      installCommand: analysis?.installCommand ?? 'npm install',
+      buildCommand: analysis?.buildCommand ?? '',
+      startCommand: analysis?.startCommand ?? '',
       port: String(localService.port),
     }),
     [],
@@ -2111,25 +2176,42 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   );
 
   const resolveNodeDeploymentProjectDirectory = useCallback(
-    async (localService: LocalWebService, preferredProjectDirectory?: string) => {
+    async (
+      localService: LocalWebService,
+      preferredProjectDirectory?: string,
+      projectCandidates: ShareDeploymentProjectCandidate[] = [],
+    ) => {
+      const hintCandidates: ShareDeploymentProjectCandidate[] = [];
+      const preferredDirectory = preferredProjectDirectory?.trim();
+      if (preferredDirectory) {
+        hintCandidates.push({
+          directory: preferredDirectory,
+          source: ShareDeploymentCandidateSource.ArtifactMetadata,
+          confidence: 90,
+          reason: 'Matched project directory metadata from the local service artifact.',
+          detectedAt: Date.now(),
+        });
+      }
+      hintCandidates.push(...projectCandidates);
+      const cachedCandidate = readNodeDeploymentProjectDirectoryCandidate(sessionId, localService.url);
+      if (cachedCandidate) {
+        hintCandidates.push(cachedCandidate);
+      }
+
       const detected = await window.electron?.shareDeployment?.detectProjectCandidates({
         localServiceUrl: localService.url,
         workingDirectory,
+        projectCandidates: hintCandidates,
+        cachedProjectDirectory: cachedCandidate?.directory,
       });
-      const processDirectory = detected?.candidates
-        ?.find(candidate => candidate.source === ShareDeploymentCandidateSource.Process)
-        ?.directory
-        ?.trim();
-      if (processDirectory) return processDirectory;
 
-      const validPreferredProjectDirectory = await validateNodeDeploymentProjectDirectory(
-        localService,
-        preferredProjectDirectory,
-      );
-      if (validPreferredProjectDirectory) return validPreferredProjectDirectory;
-
-      const detectedDirectory = detected?.candidates?.[0]?.directory?.trim();
-      if (detectedDirectory) return detectedDirectory;
+      for (const candidate of detected?.candidates ?? []) {
+        const validDirectory = await validateNodeDeploymentProjectDirectory(
+          localService,
+          candidate.directory,
+        );
+        if (validDirectory) return validDirectory;
+      }
 
       const validWorkingDirectory = await validateNodeDeploymentProjectDirectory(
         localService,
@@ -2138,6 +2220,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
       return validWorkingDirectory || workingDirectory.trim() || '';
     },
     [
+      sessionId,
       validateNodeDeploymentProjectDirectory,
       workingDirectory,
     ],
@@ -2191,6 +2274,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
       const projectDirectory = await resolveNodeDeploymentProjectDirectory(
         browserLocalService,
         storedProjectDirectory,
+        browserLocalServiceProjectCandidates,
       );
       if (nodeDeploymentActionRunIdRef.current !== runId) return;
       const lookupKey = getNodeDeploymentLookupKey(
@@ -2236,6 +2320,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   }, [
     browserLocalService,
     browserLocalServiceProjectDirectory,
+    browserLocalServiceProjectCandidates,
     checkLocalServiceAvailable,
     ensureHtmlShareAllowed,
     isHtmlSharing,
@@ -2282,20 +2367,20 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
       const projectDirectory = await resolveNodeDeploymentProjectDirectory(
         localService,
         currentDialog?.projectDirectory?.trim() || storedProjectDirectory,
+        localService.projectCandidates?.length
+          ? localService.projectCandidates
+          : browserLocalServiceProjectCandidates,
       );
       if (nodeDeploymentActionRunIdRef.current !== runId) return;
-      const confirmDialog = buildNodeDeploymentConfirmDialog(localService, projectDirectory);
+      const analysis = await analyzeNodeDeploymentProject(localService, projectDirectory);
+      if (nodeDeploymentActionRunIdRef.current !== runId) return;
+      const confirmDialog = buildNodeDeploymentConfirmDialog(localService, projectDirectory, analysis);
       const deployment = currentDialog?.deployment;
       setNodeDeploymentDialog({
         ...confirmDialog,
         accessMode: normalizeHtmlShareAccessMode(
           currentDialog?.accessMode ?? deployment?.accessMode ?? confirmDialog.accessMode,
         ),
-        nodeVersion: currentDialog?.nodeVersion ?? deployment?.runtimeVersion ?? confirmDialog.nodeVersion,
-        installCommand: currentDialog?.installCommand ?? deployment?.installCommand ?? confirmDialog.installCommand,
-        buildCommand: currentDialog?.buildCommand ?? deployment?.buildCommand ?? confirmDialog.buildCommand,
-        startCommand: currentDialog?.startCommand ?? deployment?.startCommand ?? confirmDialog.startCommand,
-        port: currentDialog?.port ?? (deployment?.targetPort ? String(deployment.targetPort) : confirmDialog.port),
       });
     } catch (error) {
       if (nodeDeploymentActionRunIdRef.current !== runId) return;
@@ -2315,7 +2400,9 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
       }
     }
   }, [
+    analyzeNodeDeploymentProject,
     browserLocalService,
+    browserLocalServiceProjectCandidates,
     buildNodeDeploymentConfirmDialog,
     checkLocalServiceAvailable,
     isNodeDeploymentBusy,
@@ -2528,6 +2615,23 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
       openLocalServiceUnavailableDialog(currentDialog.localService, currentDialog.projectDirectory);
       return;
     }
+    const isStaticDeployment = currentDialog.analysis?.deploymentKind === ShareDeploymentKind.StaticSite;
+    const isPlainStaticDeployment =
+      isStaticDeployment &&
+      currentDialog.analysis?.packageManager === ShareDeploymentPackageManager.Unknown;
+    const installCommand = isPlainStaticDeployment
+      ? ''
+      : isStaticDeployment
+        ? currentDialog.installCommand?.trim() || currentDialog.analysis?.installCommand || 'npm install'
+        : currentDialog.installCommand ?? currentDialog.analysis?.installCommand ?? 'npm install';
+    const buildCommand = isPlainStaticDeployment
+      ? ''
+      : isStaticDeployment
+        ? currentDialog.buildCommand?.trim() || currentDialog.analysis?.buildCommand || ''
+        : currentDialog.buildCommand ?? currentDialog.analysis?.buildCommand ?? '';
+    const startCommand = isStaticDeployment
+      ? ''
+      : currentDialog.startCommand || currentDialog.analysis?.startCommand || 'npm run start';
 
     setIsNodeDeploymentBusy(true);
     setIsNodeDeploymentDialogOpen(true);
@@ -2550,9 +2654,9 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
         projectDirectory: currentDialog.projectDirectory,
         accessMode: normalizeHtmlShareAccessMode(currentDialog.accessMode),
         nodeVersion: currentDialog.nodeVersion || currentDialog.analysis?.nodeVersion || '20',
-        installCommand: currentDialog.installCommand ?? currentDialog.analysis?.installCommand ?? 'npm ci',
-        buildCommand: currentDialog.buildCommand ?? currentDialog.analysis?.buildCommand ?? '',
-        startCommand: currentDialog.startCommand || currentDialog.analysis?.startCommand || 'npm run start',
+        installCommand,
+        buildCommand,
+        startCommand,
         port,
       });
       if (nodeDeploymentActionRunIdRef.current !== runId) return;
@@ -3541,10 +3645,12 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   const nodeDeploymentSelectedAccessMode = normalizeHtmlShareAccessMode(
     nodeDeploymentDialog?.accessMode,
   );
+  const isStaticNodeDeployment =
+    nodeDeploymentAnalysis?.deploymentKind === ShareDeploymentKind.StaticSite;
   const isNodeDeploymentSubmitDisabled = Boolean(
     isNodeDeploymentBusy ||
       !nodeDeploymentDialog?.projectDirectory?.trim() ||
-      !nodeDeploymentDialog?.startCommand?.trim() ||
+      (!isStaticNodeDeployment && !nodeDeploymentDialog?.startCommand?.trim()) ||
       !nodeDeploymentDialog?.port?.trim() ||
       nodeDeploymentAnalysis?.blockers.length,
   );
@@ -4759,6 +4865,7 @@ function parseLocalServiceUrl(
   rawUrl: string | undefined,
   title?: string,
   projectDirectory?: string,
+  projectCandidates?: ShareDeploymentProjectCandidate[],
 ): LocalWebService | null {
   if (!rawUrl) return null;
   try {
@@ -4774,6 +4881,7 @@ function parseLocalServiceUrl(
       port,
       online: false,
       ...(projectDirectory?.trim() ? { projectDirectory: projectDirectory.trim() } : {}),
+      ...(projectCandidates?.length ? { projectCandidates } : {}),
     };
   } catch {
     return null;
@@ -4786,52 +4894,66 @@ function parseLocalServiceArtifact(artifact: Artifact): LocalWebService | null {
     artifact.url || artifact.content,
     artifact.title,
     artifact.localService?.projectDirectory,
+    artifact.localService?.projectCandidates,
   );
 }
 
+function shouldPreferLocalService(candidate: LocalWebService, current: LocalWebService): boolean {
+  const candidateHasProject = Boolean(candidate.projectDirectory?.trim());
+  const currentHasProject = Boolean(current.projectDirectory?.trim());
+  if (candidateHasProject !== currentHasProject) return candidateHasProject;
+  const candidateCandidateCount = candidate.projectCandidates?.length ?? 0;
+  const currentCandidateCount = current.projectCandidates?.length ?? 0;
+  if (candidateCandidateCount !== currentCandidateCount) return candidateCandidateCount > currentCandidateCount;
+  if (candidate.online !== current.online) return candidate.online;
+  return false;
+}
+
 function getSessionLocalServices(artifacts: Artifact[] | undefined): LocalWebService[] {
-  const byKey = new Map<string, LocalWebService>();
+  const byPort = new Map<number, LocalWebService>();
   for (const artifact of artifacts ?? []) {
     const service = parseLocalServiceArtifact(artifact);
     if (!service) continue;
-    const key = getNodeDeploymentLookupKey('', service.url, service.projectDirectory);
-    if (byKey.has(key)) continue;
-    byKey.set(key, service);
+    const existing = byPort.get(service.port);
+    if (!existing || shouldPreferLocalService(service, existing)) {
+      byPort.set(service.port, service);
+    }
   }
-  return Array.from(byKey.values());
+  return Array.from(byPort.values());
 }
 
 function mergeLocalServices(
   sessionServices: LocalWebService[],
   discoveredServices: LocalWebService[],
 ): LocalWebService[] {
-  const byKey = new Map<string, LocalWebService>();
+  const byPort = new Map<number, LocalWebService>();
   const discoveredByPort = new Map(discoveredServices.map(service => [service.port, service]));
 
   for (const sessionService of sessionServices) {
     const discovered = discoveredByPort.get(sessionService.port);
-    byKey.set(
-      getNodeDeploymentLookupKey('', sessionService.url, sessionService.projectDirectory),
-      discovered
-        ? {
-            ...sessionService,
-            title: discovered.title || sessionService.title,
-            url: sessionService.url || discovered.url,
-            host: discovered.host || sessionService.host,
-            online: true,
-          }
-        : sessionService,
-    );
-  }
-
-  for (const discoveredService of discoveredServices) {
-    const key = getNodeDeploymentLookupKey('', discoveredService.url);
-    if (!byKey.has(key)) {
-      byKey.set(key, discoveredService);
+    const service = discovered
+      ? {
+          ...sessionService,
+          title: discovered.title || sessionService.title,
+          url: sessionService.url || discovered.url,
+          host: discovered.host || sessionService.host,
+          online: true,
+        }
+      : sessionService;
+    const existing = byPort.get(service.port);
+    if (!existing || shouldPreferLocalService(service, existing)) {
+      byPort.set(service.port, service);
     }
   }
 
-  return Array.from(byKey.values()).slice(0, LocalServiceDisplay.Limit);
+  for (const discoveredService of discoveredServices) {
+    const existing = byPort.get(discoveredService.port);
+    if (!existing || shouldPreferLocalService(discoveredService, existing)) {
+      byPort.set(discoveredService.port, discoveredService);
+    }
+  }
+
+  return Array.from(byPort.values()).slice(0, LocalServiceDisplay.Limit);
 }
 
 interface BrowserAnnotationLabels {

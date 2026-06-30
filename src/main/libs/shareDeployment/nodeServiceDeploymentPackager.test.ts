@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, test } from 'vitest';
 
-import { ShareDeploymentKind } from '../../../shared/shareDeployment/constants';
+import { ShareDeploymentKind, ShareDeploymentPackageManager } from '../../../shared/shareDeployment/constants';
 import { packageNodeServiceDeployment } from './nodeServiceDeploymentPackager';
 
 const tempDirectories: string[] = [];
@@ -117,7 +117,7 @@ describe('packageNodeServiceDeployment', () => {
     const result = await packageNodeServiceDeployment({
       projectDirectory,
       localServiceUrl: 'http://localhost:3000',
-      installCommand: '',
+      installCommand: 'node -e ""',
       buildCommand: 'node build.js',
       port: 3000,
     });
@@ -128,6 +128,94 @@ describe('packageNodeServiceDeployment', () => {
     expect(result.analysis.startCommand).toBe('');
     expect(result.totalFiles).toBe(2);
     expect(result.totalBytes).toBeLessThan(20 * 1024);
+
+    await fs.promises.rm(path.dirname(result.archivePath), { recursive: true, force: true });
+  });
+
+  test('uses default build command when stale static deployment input sends a blank build command', async () => {
+    const projectDirectory = await makeTempProject({
+      name: 'vite-static-blank-input',
+      scripts: {
+        build: 'node build.js',
+      },
+      devDependencies: {
+        vite: '5.0.0',
+      },
+    });
+    await writeFile(
+      projectDirectory,
+      'build.js',
+      [
+        'const fs = require("fs");',
+        'fs.mkdirSync("dist/assets", { recursive: true });',
+        'fs.writeFileSync("dist/index.html", "<!doctype html><div id=\\"root\\"></div>");',
+        'fs.writeFileSync("dist/assets/app.js", "console.log(1)");',
+      ].join('\n'),
+    );
+
+    const result = await packageNodeServiceDeployment({
+      projectDirectory,
+      localServiceUrl: 'http://localhost:5174',
+      installCommand: 'node -e ""',
+      buildCommand: '',
+      startCommand: '',
+      port: 5174,
+    });
+
+    expect(result.deploymentKind).toBe(ShareDeploymentKind.StaticSite);
+    expect(result.entryFile).toBe('index.html');
+    expect(result.analysis.installCommand).toBe('node -e ""');
+    expect(result.analysis.buildCommand).toBe('npm run build');
+    expect(result.analysis.startCommand).toBe('');
+    expect(result.totalFiles).toBe(2);
+
+    await fs.promises.rm(path.dirname(result.archivePath), { recursive: true, force: true });
+  });
+
+  test('packages plain static site directories without package.json', async () => {
+    const projectDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lobster-static-packager-test-'));
+    tempDirectories.push(projectDirectory);
+    await writeFile(projectDirectory, 'index.html', '<!doctype html><link rel="stylesheet" href="./style.css">');
+    await writeFile(projectDirectory, 'style.css', 'body { margin: 0; }');
+    await writeFile(projectDirectory, 'images/hero.svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+
+    const result = await packageNodeServiceDeployment({
+      projectDirectory,
+      localServiceUrl: 'http://localhost:8765',
+      port: 8765,
+    });
+
+    expect(result.deploymentKind).toBe(ShareDeploymentKind.StaticSite);
+    expect(result.entryFile).toBe('index.html');
+    expect(result.spaFallback).toBe(true);
+    expect(result.analysis.packageManager).toBe(ShareDeploymentPackageManager.Unknown);
+    expect(result.analysis.installCommand).toBe('');
+    expect(result.analysis.buildCommand).toBe('');
+    expect(result.analysis.startCommand).toBe('');
+    expect(result.totalFiles).toBe(3);
+
+    await fs.promises.rm(path.dirname(result.archivePath), { recursive: true, force: true });
+  });
+
+  test('ignores stale install commands for plain static site directories', async () => {
+    const projectDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lobster-static-packager-test-'));
+    tempDirectories.push(projectDirectory);
+    await writeFile(projectDirectory, 'index.html', '<!doctype html><h1>Static</h1>');
+
+    const result = await packageNodeServiceDeployment({
+      projectDirectory,
+      localServiceUrl: 'http://localhost:8765',
+      installCommand: 'npm install',
+      buildCommand: 'npm run build',
+      startCommand: 'npm run start',
+      port: 8765,
+    });
+
+    expect(result.deploymentKind).toBe(ShareDeploymentKind.StaticSite);
+    expect(result.analysis.installCommand).toBe('');
+    expect(result.analysis.buildCommand).toBe('');
+    expect(result.analysis.startCommand).toBe('');
+    expect(result.totalFiles).toBe(1);
 
     await fs.promises.rm(path.dirname(result.archivePath), { recursive: true, force: true });
   });

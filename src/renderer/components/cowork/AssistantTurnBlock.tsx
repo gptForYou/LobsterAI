@@ -224,8 +224,13 @@ const AssistantTurnBlock: React.FC<{
     [artifacts],
   );
   const artifactCards = useMemo(
-    () => artifacts ? dedupeArtifactsForDisplay(artifacts) : [],
-    [artifacts],
+    () => artifacts
+      ? dedupeArtifactsForDisplay(
+          artifacts,
+          { defaultProjectDirectory: localServiceDirectory },
+        )
+      : [],
+    [artifacts, localServiceDirectory],
   );
   const visibleArtifactCards = useMemo(() => {
     return artifactCardsExpanded ? artifactCards : artifactCards.slice(0, 3);

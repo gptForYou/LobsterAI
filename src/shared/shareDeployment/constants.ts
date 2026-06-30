@@ -16,8 +16,15 @@ export type ShareDeploymentIpc = (typeof ShareDeploymentIpc)[keyof typeof ShareD
 
 export const ShareDeploymentCandidateSource = {
   Process: 'process',
+  ProcessCwd: 'process_cwd',
+  ArtifactMetadata: 'artifact_metadata',
+  TextLabeledPath: 'text_labeled_path',
+  TextFileLink: 'text_file_link',
+  TextCdCommand: 'text_cd_command',
+  TextCommonParent: 'text_common_parent',
   Workspace: 'workspace',
   WorkspaceChild: 'workspace_child',
+  Cache: 'cache',
   Manual: 'manual',
 } as const;
 
@@ -59,11 +66,18 @@ export interface ShareDeploymentProjectCandidate {
   source: ShareDeploymentCandidateSource;
   confidence: number;
   reason?: string;
+  evidence?: string;
+  messageId?: string;
+  artifactId?: string;
+  pid?: number;
+  detectedAt?: number;
 }
 
 export interface ShareDeploymentDetectCandidatesInput {
   localServiceUrl: string;
   workingDirectory?: string;
+  projectCandidates?: ShareDeploymentProjectCandidate[];
+  cachedProjectDirectory?: string;
 }
 
 export interface ShareDeploymentDetectCandidatesResult {

@@ -25,6 +25,7 @@ export const NODE_SERVICE_DEPLOYMENT_LIMITS = {
 } as const;
 
 const PACKAGE_JSON_FILE_NAME = 'package.json';
+const STATIC_SITE_ENTRY_FILE = 'index.html';
 
 const COMMON_BLOCKED_DIRECTORY_NAMES = [
   '.git',
@@ -59,6 +60,10 @@ const SOURCE_BLOCKED_DIRECTORY_NAMES = new Set([
 ]);
 
 const DEPLOYMENT_BLOCKED_DIRECTORY_NAMES = new Set(COMMON_BLOCKED_DIRECTORY_NAMES);
+const STATIC_SITE_BLOCKED_DIRECTORY_NAMES = new Set([
+  ...COMMON_BLOCKED_DIRECTORY_NAMES,
+  'node_modules',
+]);
 
 const BLOCKED_FILE_NAMES = new Set([
   '.DS_Store',
@@ -74,6 +79,44 @@ const PROJECT_CANDIDATE_SCAN_MAX_DIRECTORIES = 300;
 const NEXT_STANDALONE_START_COMMAND = 'node server.js';
 const NITRO_OUTPUT_START_COMMAND = 'node .output/server/index.mjs';
 const STATIC_BUILD_START_COMMAND = 'node server.js';
+const STATIC_SITE_SUPPORTED_EXTENSION_NAMES = new Set([
+  '.avif',
+  '.css',
+  '.csv',
+  '.docx',
+  '.eot',
+  '.gif',
+  '.html',
+  '.ico',
+  '.jpeg',
+  '.jpg',
+  '.js',
+  '.json',
+  '.map',
+  '.markdown',
+  '.md',
+  '.mermaid',
+  '.mjs',
+  '.mmd',
+  '.mp3',
+  '.mp4',
+  '.otf',
+  '.pdf',
+  '.png',
+  '.pptx',
+  '.svg',
+  '.tsv',
+  '.ttf',
+  '.txt',
+  '.wasm',
+  '.webm',
+  '.webmanifest',
+  '.webp',
+  '.woff',
+  '.woff2',
+  '.xlsx',
+  '.xml',
+]);
 
 interface PackageJson {
   name?: string;
@@ -188,12 +231,32 @@ async function hasPackageJson(directory: string): Promise<boolean> {
   return await pathExists(path.join(directory, PACKAGE_JSON_FILE_NAME));
 }
 
+async function hasStaticSiteEntryFile(directory: string): Promise<boolean> {
+  try {
+    const stat = await fs.promises.stat(path.join(directory, STATIC_SITE_ENTRY_FILE));
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+}
+
 async function findNearestProjectDirectory(startDirectory: string): Promise<string | null> {
   let current = path.resolve(startDirectory);
   while (true) {
     if (await hasPackageJson(current)) return current;
     const parent = path.dirname(current);
     if (parent === current) return null;
+    current = parent;
+  }
+}
+
+async function findNearestStaticSiteDirectory(startDirectory: string): Promise<string | null> {
+  let current = path.resolve(startDirectory);
+  while (true) {
+    if (await hasStaticSiteEntryFile(current)) return current;
+    if (await hasPackageJson(current)) return null;
+    const parent = path.dirname(current);
+    if (parent === current || isBlockedRootDirectory(parent)) return null;
     current = parent;
   }
 }
@@ -210,6 +273,18 @@ async function findProjectDirectoryCandidate(startDirectory?: string): Promise<s
   return await findNearestProjectDirectory(resolved);
 }
 
+async function findStaticSiteDirectoryCandidate(startDirectory?: string): Promise<string | null> {
+  if (!startDirectory?.trim()) return null;
+  const resolved = path.resolve(startDirectory.trim());
+  try {
+    const stat = await fs.promises.stat(resolved);
+    if (!stat.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  return await findNearestStaticSiteDirectory(resolved);
+}
+
 function resolvePackageManager(projectDirectory: string): ShareDeploymentPackageManager {
   if (fs.existsSync(path.join(projectDirectory, 'pnpm-lock.yaml'))) {
     return ShareDeploymentPackageManager.Pnpm;
@@ -223,15 +298,25 @@ function resolvePackageManager(projectDirectory: string): ShareDeploymentPackage
   return ShareDeploymentPackageManager.Npm;
 }
 
-function resolveInstallCommand(packageManager: ShareDeploymentPackageManager): string {
+function hasNpmLockfile(projectDirectory: string): boolean {
+  return fs.existsSync(path.join(projectDirectory, 'package-lock.json')) ||
+    fs.existsSync(path.join(projectDirectory, 'npm-shrinkwrap.json'));
+}
+
+function resolveInstallCommand(
+  projectDirectory: string,
+  packageManager: ShareDeploymentPackageManager,
+): string {
   switch (packageManager) {
     case ShareDeploymentPackageManager.Pnpm:
       return 'pnpm install --frozen-lockfile';
     case ShareDeploymentPackageManager.Yarn:
       return 'yarn install --frozen-lockfile';
+    case ShareDeploymentPackageManager.Unknown:
+      return '';
     case ShareDeploymentPackageManager.Npm:
     default:
-      return 'npm ci';
+      return hasNpmLockfile(projectDirectory) ? 'npm ci' : 'npm install';
   }
 }
 
@@ -270,6 +355,15 @@ function hasPackageDependency(packageJson: PackageJson | null, packageNames: str
   return packageNames.some(packageName => Boolean(dependencies[packageName]));
 }
 
+function hasPackageScript(packageJson: PackageJson | null, scriptName: string): boolean {
+  const script = packageJson?.scripts?.[scriptName];
+  return typeof script === 'string' && script.trim().length > 0;
+}
+
+function hasProductionStartScript(packageJson: PackageJson | null): boolean {
+  return hasPackageScript(packageJson, 'start') || hasPackageScript(packageJson, 'serve');
+}
+
 function isNuxtProjectPackage(packageJson: PackageJson | null): boolean {
   return hasPackageDependency(packageJson, ['nuxt', 'nuxt3']);
 }
@@ -286,39 +380,90 @@ function isStaticBuildProjectPackage(packageJson: PackageJson | null): boolean {
   ]);
 }
 
+function isSupportedStaticSiteFileName(name: string): boolean {
+  return STATIC_SITE_SUPPORTED_EXTENSION_NAMES.has(path.extname(name).toLowerCase());
+}
+
+function isSvelteKitProjectPackage(packageJson: PackageJson | null): boolean {
+  return hasPackageDependency(packageJson, ['@sveltejs/kit', '@sveltejs/vite-plugin-svelte']);
+}
+
+function hasSvelteKitProductionAdapter(packageJson: PackageJson | null): boolean {
+  return hasPackageDependency(packageJson, [
+    '@sveltejs/adapter-static',
+    '@sveltejs/adapter-node',
+    '@sveltejs/adapter-vercel',
+    '@sveltejs/adapter-netlify',
+    '@sveltejs/adapter-cloudflare',
+  ]);
+}
+
+function isDevStartCommand(command: string): boolean {
+  return command.endsWith(' run dev') || command.endsWith(' dev');
+}
+
+function deploymentReadinessBlockers(
+  packageJson: PackageJson | null,
+  startCommand: string,
+): string[] {
+  if (!packageJson) return [];
+
+  const blockers: string[] = [];
+  if (isDevStartCommand(startCommand) && !hasProductionStartScript(packageJson)) {
+    blockers.push(
+      'This project only defines a development start command. Add a production start/serve script or configure a supported static build before sharing.',
+    );
+  }
+
+  if (
+    isSvelteKitProjectPackage(packageJson) &&
+    hasPackageDependency(packageJson, ['@sveltejs/adapter-auto']) &&
+    !hasSvelteKitProductionAdapter(packageJson) &&
+    !hasProductionStartScript(packageJson)
+  ) {
+    blockers.push(
+      'This SvelteKit project uses @sveltejs/adapter-auto without a production deployment adapter. Use @sveltejs/adapter-static for static sharing, or @sveltejs/adapter-node with a start script such as "node build/index.js".',
+    );
+  }
+
+  return blockers;
+}
+
 function resolveStartCommand(
   packageJson: PackageJson | null,
   packageManager: ShareDeploymentPackageManager,
 ): string {
-  const scripts = packageJson?.scripts ?? {};
   if (
     isNextProjectPackage(packageJson) &&
-    typeof scripts.build === 'string' &&
-    scripts.build.trim()
+    hasPackageScript(packageJson, 'build')
   ) {
     return NEXT_STANDALONE_START_COMMAND;
   }
   if (
     isNuxtProjectPackage(packageJson) &&
-    typeof scripts.build === 'string' &&
-    scripts.build.trim()
+    hasPackageScript(packageJson, 'build')
   ) {
     return NITRO_OUTPUT_START_COMMAND;
   }
   if (
     isStaticBuildProjectPackage(packageJson) &&
-    typeof scripts.build === 'string' &&
-    scripts.build.trim()
+    hasPackageScript(packageJson, 'build')
   ) {
     return STATIC_BUILD_START_COMMAND;
   }
-  if (typeof scripts.start === 'string' && scripts.start.trim()) return scriptRunCommand(packageManager, 'start');
-  if (typeof scripts.serve === 'string' && scripts.serve.trim()) return scriptRunCommand(packageManager, 'serve');
-  if (typeof scripts.dev === 'string' && scripts.dev.trim()) return scriptRunCommand(packageManager, 'dev');
+  if (hasPackageScript(packageJson, 'start')) return scriptRunCommand(packageManager, 'start');
+  if (hasPackageScript(packageJson, 'serve')) return scriptRunCommand(packageManager, 'serve');
+  if (hasPackageScript(packageJson, 'dev')) return scriptRunCommand(packageManager, 'dev');
   return '';
 }
 
-function resolveDeploymentKind(packageJson: PackageJson | null): ShareDeploymentKind {
+function resolveDeploymentKind(
+  packageJson: PackageJson | null,
+  isStaticSiteDirectory: boolean,
+): ShareDeploymentKind {
+  if (!packageJson && isStaticSiteDirectory) {
+    return ShareDeploymentKind.StaticSite;
+  }
   if (isStaticBuildProjectPackage(packageJson) && !isNextProjectPackage(packageJson) && !isNuxtProjectPackage(packageJson)) {
     return ShareDeploymentKind.StaticSite;
   }
@@ -326,24 +471,20 @@ function resolveDeploymentKind(packageJson: PackageJson | null): ShareDeployment
 }
 
 function hasRunnableScript(packageJson: PackageJson | null): boolean {
-  const scripts = packageJson?.scripts ?? {};
   if (
     isNextProjectPackage(packageJson) &&
-    typeof scripts.build === 'string' &&
-    scripts.build.trim().length > 0
+    hasPackageScript(packageJson, 'build')
   ) {
     return true;
   }
   if (
     (isNuxtProjectPackage(packageJson) || isStaticBuildProjectPackage(packageJson)) &&
-    typeof scripts.build === 'string' &&
-    scripts.build.trim().length > 0
+    hasPackageScript(packageJson, 'build')
   ) {
     return true;
   }
   return ['start', 'serve', 'dev'].some(scriptName => {
-    const script = scripts[scriptName];
-    return typeof script === 'string' && script.trim().length > 0;
+    return hasPackageScript(packageJson, scriptName);
   });
 }
 
@@ -356,6 +497,22 @@ async function isUsableNodeProjectDirectory(projectDirectory: string): Promise<b
   } catch {
     return false;
   }
+}
+
+async function isUsableStaticSiteDirectory(projectDirectory: string): Promise<boolean> {
+  try {
+    const stat = await fs.promises.stat(projectDirectory);
+    return stat.isDirectory() &&
+      !isBlockedRootDirectory(projectDirectory) &&
+      await hasStaticSiteEntryFile(projectDirectory);
+  } catch {
+    return false;
+  }
+}
+
+async function isUsableProjectDirectory(projectDirectory: string): Promise<boolean> {
+  return await isUsableNodeProjectDirectory(projectDirectory) ||
+    await isUsableStaticSiteDirectory(projectDirectory);
 }
 
 function resolveNodeVersion(packageJson: PackageJson | null): string {
@@ -452,6 +609,82 @@ export async function collectNodeServiceDeploymentPackageEntries(
   );
 }
 
+export async function collectStaticSiteDeploymentPackageEntries(
+  projectDirectory: string,
+): Promise<NodeServicePackageCollection> {
+  const entries: NodeServicePackageEntry[] = [];
+  const warnings: string[] = [];
+  const blockers: string[] = [];
+  let totalBytes = 0;
+  let excludedCount = 0;
+
+  async function walk(directory: string): Promise<void> {
+    if (blockers.length > 0) return;
+
+    let children: fs.Dirent[];
+    try {
+      children = await fs.promises.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const child of children) {
+      if (blockers.length > 0) return;
+      const absolutePath = path.join(directory, child.name);
+      const relativePath = path.relative(projectDirectory, absolutePath);
+      const relativeParts = relativePath.split(path.sep).filter(Boolean);
+      if (
+        relativeParts.some(part => isBlockedPathPart(part, STATIC_SITE_BLOCKED_DIRECTORY_NAMES)) ||
+        isBlockedFileName(child.name) ||
+        child.isSymbolicLink()
+      ) {
+        excludedCount += 1;
+        continue;
+      }
+      if (child.isDirectory()) {
+        await walk(absolutePath);
+        continue;
+      }
+      if (!child.isFile() || !isSupportedStaticSiteFileName(child.name)) {
+        excludedCount += 1;
+        continue;
+      }
+
+      const stat = await fs.promises.stat(absolutePath);
+      totalBytes += stat.size;
+      entries.push({
+        absolutePath,
+        archiveName: normalizeArchiveName(relativePath),
+        size: stat.size,
+      });
+      if (entries.length > NODE_SERVICE_DEPLOYMENT_LIMITS.MaxFiles) {
+        blockers.push(`Project has more than ${NODE_SERVICE_DEPLOYMENT_LIMITS.MaxFiles} files after exclusions.`);
+        return;
+      }
+      if (totalBytes > NODE_SERVICE_DEPLOYMENT_LIMITS.MaxDeploymentTotalBytes) {
+        blockers.push(
+          `Project files exceed ${Math.floor(NODE_SERVICE_DEPLOYMENT_LIMITS.MaxDeploymentTotalBytes / 1024 / 1024)}MB after exclusions.`,
+        );
+        return;
+      }
+    }
+  }
+
+  await walk(projectDirectory);
+
+  if (excludedCount > 0) {
+    warnings.push(`${excludedCount} files or directories will be excluded from the static deployment package.`);
+  }
+
+  return {
+    entries: entries.sort((a, b) => a.archiveName.localeCompare(b.archiveName)),
+    totalBytes,
+    excludedCount,
+    warnings,
+    blockers,
+  };
+}
+
 export async function buildNodeServiceProjectPackagePlan(
   input: ShareDeploymentAnalyzeProjectInput,
 ): Promise<NodeServiceProjectPackagePlan> {
@@ -474,39 +707,47 @@ export async function buildNodeServiceProjectPackagePlan(
     blockers.push('Choose a project subdirectory instead of a system, home, or shared root directory.');
   }
 
+  const isStaticSiteDirectory = stat?.isDirectory()
+    ? await hasStaticSiteEntryFile(projectDirectory)
+    : false;
   const packageJson = await readPackageJson(projectDirectory);
-  if (!packageJson) {
-    blockers.push('Project directory must contain package.json.');
+  if (!packageJson && !isStaticSiteDirectory) {
+    blockers.push('Project directory must contain package.json or index.html.');
   }
 
-  const packageManager = resolvePackageManager(projectDirectory);
-  const installCommand = resolveInstallCommand(packageManager);
+  const packageManager = packageJson
+    ? resolvePackageManager(projectDirectory)
+    : ShareDeploymentPackageManager.Unknown;
+  const installCommand = resolveInstallCommand(projectDirectory, packageManager);
   const buildCommand = resolveBuildCommand(packageJson, packageManager);
   const startCommand = resolveStartCommand(packageJson, packageManager);
-  const deploymentKind = resolveDeploymentKind(packageJson);
+  const deploymentKind = resolveDeploymentKind(packageJson, isStaticSiteDirectory);
   const nodeVersion = resolveNodeVersion(packageJson);
   const port = parseLocalServicePort(input.localServiceUrl);
 
-  if (!startCommand) {
+  if (!startCommand && deploymentKind !== ShareDeploymentKind.StaticSite) {
     blockers.push('package.json must define a start, serve, or dev script.');
   }
+  blockers.push(...deploymentReadinessBlockers(packageJson, startCommand));
   if (!port) {
     blockers.push('Local service URL must include a valid port.');
   }
-  if (startCommand.endsWith(' run dev')) {
+  if (isDevStartCommand(startCommand) && !blockers.length) {
     warnings.push('Only a dev script was found. Confirm the service can run in a cloud deployment.');
   }
-  if (packageManager === ShareDeploymentPackageManager.Npm && !fs.existsSync(path.join(projectDirectory, 'package-lock.json'))) {
-    warnings.push('No package-lock.json was found. npm install behavior may be less reproducible.');
+  if (packageJson && packageManager === ShareDeploymentPackageManager.Npm && !hasNpmLockfile(projectDirectory)) {
+    warnings.push('No npm lockfile was found. npm install behavior may be less reproducible.');
   }
 
   const shouldCollectPackageEntries = Boolean(stat?.isDirectory() && blockers.length === 0);
   const collected = shouldCollectPackageEntries
-    ? await collectPackageEntries(
-        projectDirectory,
-        SOURCE_BLOCKED_DIRECTORY_NAMES,
-        NODE_SERVICE_DEPLOYMENT_LIMITS.MaxSourceTotalBytes,
-      )
+    ? deploymentKind === ShareDeploymentKind.StaticSite && !packageJson
+      ? await collectStaticSiteDeploymentPackageEntries(projectDirectory)
+      : await collectPackageEntries(
+          projectDirectory,
+          SOURCE_BLOCKED_DIRECTORY_NAMES,
+          NODE_SERVICE_DEPLOYMENT_LIMITS.MaxSourceTotalBytes,
+        )
     : {
         entries: [],
         totalBytes: 0,
@@ -553,7 +794,7 @@ export async function analyzeNodeServiceProjectDirectory(
       projectDirectory: input.projectDirectory,
       packageManager: ShareDeploymentPackageManager.Unknown,
       nodeVersion: '20',
-      installCommand: 'npm ci',
+      installCommand: 'npm install',
       buildCommand: '',
       startCommand: '',
       totalFiles: 0,
@@ -611,10 +852,32 @@ function pushUniqueCandidate(
 ): void {
   if (!candidate?.directory) return;
   const normalized = path.resolve(candidate.directory);
-  if (candidates.some(item => path.resolve(item.directory) === normalized)) return;
-  candidates.push({
+  const normalizedCandidate: ShareDeploymentProjectCandidate = {
     ...candidate,
     directory: normalized,
+    confidence: Math.max(0, Math.min(100, Math.round(candidate.confidence))),
+    detectedAt: candidate.detectedAt ?? Date.now(),
+  };
+  const existingIndex = candidates.findIndex(item => path.resolve(item.directory) === normalized);
+  if (existingIndex >= 0) {
+    if (normalizedCandidate.confidence > candidates[existingIndex].confidence) {
+      candidates[existingIndex] = normalizedCandidate;
+    }
+    return;
+  }
+  candidates.push(normalizedCandidate);
+}
+
+async function pushUsableInputCandidate(
+  candidates: ShareDeploymentProjectCandidate[],
+  candidate: ShareDeploymentProjectCandidate | null,
+): Promise<void> {
+  if (!candidate?.directory?.trim()) return;
+  const directory = path.resolve(candidate.directory.trim());
+  if (!await isUsableProjectDirectory(directory)) return;
+  pushUniqueCandidate(candidates, {
+    ...candidate,
+    directory,
   });
 }
 
@@ -652,12 +915,12 @@ async function findWorkspaceChildProjectCandidates(
 
       const childDirectory = path.join(directory, child.name);
       visitedDirectories += 1;
-      if (await isUsableNodeProjectDirectory(childDirectory)) {
+      if (await isUsableProjectDirectory(childDirectory)) {
         pushUniqueCandidate(candidates, {
           directory: childDirectory,
           source: ShareDeploymentCandidateSource.WorkspaceChild,
           confidence: Math.max(50, 76 - depth * 6),
-          reason: 'Found a runnable Node project under the current workspace directory.',
+          reason: 'Found a deployable project under the current workspace directory.',
         });
       }
 
@@ -688,17 +951,55 @@ export async function detectNodeServiceProjectCandidates(
       usableProjectDirectory
         ? {
             directory: usableProjectDirectory,
-            source: ShareDeploymentCandidateSource.Process,
+            source: ShareDeploymentCandidateSource.ProcessCwd,
             confidence: 95,
             reason: `Matched the process listening on port ${port}.`,
+            pid: Number(pid),
           }
         : null,
     );
+    if (!usableProjectDirectory) {
+      const staticSiteDirectory = cwd ? await findStaticSiteDirectoryCandidate(cwd) : null;
+      const usableStaticSiteDirectory =
+        staticSiteDirectory && await isUsableStaticSiteDirectory(staticSiteDirectory)
+          ? staticSiteDirectory
+          : null;
+      pushUniqueCandidate(
+        candidates,
+        usableStaticSiteDirectory
+          ? {
+              directory: usableStaticSiteDirectory,
+              source: ShareDeploymentCandidateSource.ProcessCwd,
+              confidence: 95,
+              reason: `Matched the static site directory served by the process listening on port ${port}.`,
+              pid: Number(pid),
+            }
+          : null,
+      );
+    }
   }
 
-  const workspaceProjectDirectory = await findProjectDirectoryCandidate(input.workingDirectory);
+  for (const candidate of input.projectCandidates ?? []) {
+    await pushUsableInputCandidate(candidates, candidate);
+  }
+
+  await pushUsableInputCandidate(
+    candidates,
+    input.cachedProjectDirectory?.trim()
+      ? {
+          directory: input.cachedProjectDirectory,
+          source: ShareDeploymentCandidateSource.Cache,
+          confidence: 35,
+          reason: 'Matched the previously used project directory for this local service origin.',
+        }
+      : null,
+  );
+
+  const workspaceProjectDirectory =
+    await findProjectDirectoryCandidate(input.workingDirectory) ??
+    await findStaticSiteDirectoryCandidate(input.workingDirectory);
   const usableWorkspaceProjectDirectory =
-    workspaceProjectDirectory && await isUsableNodeProjectDirectory(workspaceProjectDirectory)
+    workspaceProjectDirectory && await isUsableProjectDirectory(workspaceProjectDirectory)
       ? workspaceProjectDirectory
       : null;
   pushUniqueCandidate(
@@ -707,7 +1008,7 @@ export async function detectNodeServiceProjectCandidates(
       ? {
           directory: usableWorkspaceProjectDirectory,
           source: ShareDeploymentCandidateSource.Workspace,
-          confidence: 80,
+          confidence: 60,
           reason: 'Matched the current workspace directory.',
         }
       : null,

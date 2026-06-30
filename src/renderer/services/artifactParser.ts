@@ -1,3 +1,7 @@
+import {
+  ShareDeploymentCandidateSource,
+  type ShareDeploymentProjectCandidate,
+} from '../../shared/shareDeployment/constants';
 import { type Artifact, type ArtifactType, ArtifactTypeValue } from '../types/artifact';
 import type { CoworkMessage } from '../types/cowork';
 
@@ -37,6 +41,22 @@ export function normalizeProjectDirectoryForDedup(projectDirectory: string): str
   return normalized.toLowerCase();
 }
 
+export function getLocalServicePortIdentityKey(url?: string): string {
+  if (!url?.trim()) return '';
+  try {
+    const parsed = new URL(trimLocalServiceUrl(url));
+    const port = parsed.port ||
+      (parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : '');
+    return port ? `local-service-port:${port}` : `local-service:${normalizeLocalServiceUrlForDedup(url)}`;
+  } catch {
+    return `local-service:${normalizeLocalServiceUrlForDedup(url)}`;
+  }
+}
+
+interface DedupeArtifactsOptions {
+  defaultProjectDirectory?: string;
+}
+
 const getArtifactIdentityKeys = (artifact: Artifact): string[] => {
   const keys: string[] = [];
   if (artifact.filePath) {
@@ -52,9 +72,7 @@ const getArtifactIdentityKeys = (artifact: Artifact): string[] => {
   if (artifact.type === ArtifactTypeValue.LocalService) {
     const localServiceUrl = artifact.url?.trim() || artifact.content?.trim();
     if (localServiceUrl) {
-      const projectDirectory = artifact.localService?.projectDirectory?.trim();
-      const projectKey = projectDirectory ? normalizeProjectDirectoryForDedup(projectDirectory) : '';
-      keys.push(`local-service:${projectKey}:${normalizeLocalServiceUrlForDedup(localServiceUrl)}`);
+      keys.push(getLocalServicePortIdentityKey(localServiceUrl));
     }
   }
   const fileName = artifact.fileName?.trim() || artifact.title?.trim();
@@ -64,7 +82,37 @@ const getArtifactIdentityKeys = (artifact: Artifact): string[] => {
   return keys;
 };
 
-const shouldPreferArtifact = (candidate: Artifact, current: Artifact): boolean => {
+function getLocalServiceProjectConfidence(
+  artifact: Artifact,
+  options: DedupeArtifactsOptions = {},
+): number {
+  if (artifact.type !== ArtifactTypeValue.LocalService) return 0;
+  const projectDirectory = artifact.localService?.projectDirectory?.trim();
+  if (!projectDirectory) return 0;
+
+  const defaultProjectDirectory = options.defaultProjectDirectory?.trim()
+    ? normalizeProjectDirectoryForDedup(options.defaultProjectDirectory)
+    : '';
+  const normalizedProjectDirectory = normalizeProjectDirectoryForDedup(projectDirectory);
+  return defaultProjectDirectory && normalizedProjectDirectory === defaultProjectDirectory ? 0 : 1;
+}
+
+export const shouldPreferArtifactForDisplay = (
+  candidate: Artifact,
+  current: Artifact,
+  options: DedupeArtifactsOptions = {},
+): boolean => {
+  if (
+    candidate.type === ArtifactTypeValue.LocalService &&
+    current.type === ArtifactTypeValue.LocalService
+  ) {
+    const candidateProjectConfidence = getLocalServiceProjectConfidence(candidate, options);
+    const currentProjectConfidence = getLocalServiceProjectConfidence(current, options);
+    if (candidateProjectConfidence !== currentProjectConfidence) {
+      return candidateProjectConfidence > currentProjectConfidence;
+    }
+  }
+
   const currentHasFileProtocol = Boolean(current.filePath && /^file:/i.test(current.filePath));
   const candidateHasFileProtocol = Boolean(candidate.filePath && /^file:/i.test(candidate.filePath));
   if (current.filePath && !candidate.filePath) return false;
@@ -77,7 +125,10 @@ const shouldPreferArtifact = (candidate: Artifact, current: Artifact): boolean =
   return true;
 };
 
-export function dedupeArtifactsForDisplay(artifacts: Artifact[]): Artifact[] {
+export function dedupeArtifactsForDisplay(
+  artifacts: Artifact[],
+  options: DedupeArtifactsOptions = {},
+): Artifact[] {
   const result: Artifact[] = [];
   const keyToIndex = new Map<string, number>();
 
@@ -96,7 +147,7 @@ export function dedupeArtifactsForDisplay(artifacts: Artifact[]): Artifact[] {
       continue;
     }
 
-    if (shouldPreferArtifact(artifact, result[existingIndex])) {
+    if (shouldPreferArtifactForDisplay(artifact, result[existingIndex], options)) {
       result[existingIndex] = artifact;
     }
     for (const key of keys) {
@@ -107,11 +158,15 @@ export function dedupeArtifactsForDisplay(artifacts: Artifact[]): Artifact[] {
   return result;
 }
 
-export function resolveArtifactIdForDisplay(artifacts: Artifact[], artifactId: string): string {
+export function resolveArtifactIdForDisplay(
+  artifacts: Artifact[],
+  artifactId: string,
+  options: DedupeArtifactsOptions = {},
+): string {
   const target = artifacts.find(artifact => artifact.id === artifactId);
   if (!target) return artifactId;
 
-  const displayArtifacts = dedupeArtifactsForDisplay(artifacts);
+  const displayArtifacts = dedupeArtifactsForDisplay(artifacts, options);
   if (displayArtifacts.some(artifact => artifact.id === artifactId)) {
     return artifactId;
   }
@@ -145,7 +200,7 @@ export function dedupeArtifactsWithinMessages(artifacts: Artifact[]): Artifact[]
       continue;
     }
 
-    if (shouldPreferArtifact(artifact, result[existingIndex])) {
+    if (shouldPreferArtifactForDisplay(artifact, result[existingIndex])) {
       result[existingIndex] = artifact;
     }
     for (const key of keys) {
@@ -215,9 +270,11 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov']);
 const BINARY_DOCUMENT_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx', '.pdf', '.csv', '.tsv', '.xls']);
 const LOCAL_SERVICE_URL_RE = /\bhttps?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::\d{1,5})?(?:\/[^\s<>"'`)\]]*)?/gi;
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
+const FILE_MARKDOWN_LINK_RE = /\[([^\]]+)\]\((file:\/\/[^)\s]+)\)/gi;
 const LOCAL_SERVICE_TRAILING_PUNCTUATION_RE = /[.,;:!?，。；：！？、]+$/;
-const PROJECT_DIRECTORY_LABEL_RE = /(?:项目目录|项目路径|工程目录|工作目录|project\s+directory|project\s+path|working\s+directory)\s*[:：]\s*([^\n]+)/gi;
+const PROJECT_DIRECTORY_LABEL_RE = /(?:项目目录|项目路径|工程目录|工作目录|project\s+directory|project\s+path|working\s+directory)\s*[:：]\s*([^\n]+)|(?:项目位置|项目位于)\s*(?:[:：]|为|是|在)?\s*([^\n]+)/gi;
 const CD_COMMAND_RE = /(?:^|\n)\s*(?:[$>]\s*)?cd(?:\s+\/d)?\s+(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\n;&|]+))/gi;
+const FILE_LIKE_PATH_EXTENSION_RE = /\.[A-Za-z0-9]{1,12}$/;
 
 
 export function getArtifactTypeFromExtension(ext: string): ArtifactType | null {
@@ -320,28 +377,206 @@ function resolveRelativeProjectDirectory(candidate: string, baseDirectory?: stri
   return `${prefix}${resolvedParts.join('/')}`;
 }
 
-function extractProjectDirectoryFromText(messageContent: string, fallbackProjectDirectory?: string): string {
-  let detected = '';
+function pathDirectoryName(value: string): string {
+  let normalized = value.trim().replace(/\\/g, '/');
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.slice(0, -1);
+  }
+  const separatorIndex = normalized.lastIndexOf('/');
+  if (separatorIndex <= 0) return normalized;
+  return normalized.slice(0, separatorIndex);
+}
+
+function fileUrlPathToDirectory(value: string, linkText?: string): string {
+  const decoded = decodeProjectDirectoryFileUrl(value);
+  if (!decoded) return '';
+  const link = linkText?.trim() || '';
+  if (decoded.endsWith('/') || link.endsWith('/')) {
+    return decoded.replace(/[\\/]+$/g, '');
+  }
+  const lastSegment = decoded.replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+  const linkLastSegment = link.replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+  const targetLooksLikeFile = FILE_LIKE_PATH_EXTENSION_RE.test(lastSegment) ||
+    FILE_LIKE_PATH_EXTENSION_RE.test(linkLastSegment);
+  return targetLooksLikeFile ? pathDirectoryName(decoded) : decoded;
+}
+
+function normalizeDirectoryForCompare(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase();
+}
+
+function splitDirectoryParts(value: string): {
+  prefix: string;
+  parts: string[];
+} {
+  const normalized = value.trim().replace(/\\/g, '/').replace(/\/+$/g, '');
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    return {
+      prefix: normalized.slice(0, 3),
+      parts: normalized.slice(3).split('/').filter(Boolean),
+    };
+  }
+  if (normalized.startsWith('/')) {
+    return {
+      prefix: '/',
+      parts: normalized.slice(1).split('/').filter(Boolean),
+    };
+  }
+  return {
+    prefix: '',
+    parts: normalized.split('/').filter(Boolean),
+  };
+}
+
+function commonProjectDirectory(directories: string[]): string {
+  const normalizedDirectories = Array.from(new Set(
+    directories
+      .map(directory => directory.trim())
+      .filter(Boolean)
+      .map(directory => directory.replace(/\\/g, '/').replace(/\/+$/g, '')),
+  ));
+  if (normalizedDirectories.length < 2) return '';
+
+  const first = splitDirectoryParts(normalizedDirectories[0]);
+  const commonParts = [...first.parts];
+  for (const directory of normalizedDirectories.slice(1)) {
+    const current = splitDirectoryParts(directory);
+    if (current.prefix.toLowerCase() !== first.prefix.toLowerCase()) return '';
+    let index = 0;
+    while (
+      index < commonParts.length &&
+      index < current.parts.length &&
+      commonParts[index].toLowerCase() === current.parts[index].toLowerCase()
+    ) {
+      index++;
+    }
+    commonParts.length = index;
+  }
+
+  if (commonParts.length === 0) return '';
+  return `${first.prefix}${commonParts.join('/')}`;
+}
+
+function addProjectDirectoryCandidate(
+  candidates: ShareDeploymentProjectCandidate[],
+  inputDirectory: string,
+  source: ShareDeploymentProjectCandidate['source'],
+  confidence: number,
+  options: {
+    fallbackProjectDirectory?: string;
+    reason?: string;
+    evidence?: string;
+    messageId?: string;
+  } = {},
+): void {
+  const cleaned = cleanProjectDirectoryCandidate(inputDirectory);
+  if (!isPlausibleProjectDirectoryCandidate(cleaned)) return;
+  const directory = resolveRelativeProjectDirectory(cleaned, options.fallbackProjectDirectory);
+  if (!isPlausibleProjectDirectoryCandidate(directory)) return;
+  const normalized = normalizeDirectoryForCompare(directory);
+  if (!normalized) return;
+
+  const existing = candidates.find(candidate => normalizeDirectoryForCompare(candidate.directory) === normalized);
+  const candidate: ShareDeploymentProjectCandidate = {
+    directory,
+    source,
+    confidence,
+    ...(options.reason ? { reason: options.reason } : {}),
+    ...(options.evidence ? { evidence: options.evidence } : {}),
+    ...(options.messageId ? { messageId: options.messageId } : {}),
+    detectedAt: Date.now(),
+  };
+  if (!existing) {
+    candidates.push(candidate);
+    return;
+  }
+  if (candidate.confidence > existing.confidence) {
+    Object.assign(existing, candidate);
+  }
+}
+
+function selectBestProjectDirectoryCandidate(
+  candidates: ShareDeploymentProjectCandidate[],
+): ShareDeploymentProjectCandidate | undefined {
+  return [...candidates].sort((a, b) => b.confidence - a.confidence)[0];
+}
+
+function collectProjectDirectoryCandidatesFromText(
+  messageContent: string,
+  fallbackProjectDirectory?: string,
+  messageId?: string,
+): ShareDeploymentProjectCandidate[] {
+  const candidates: ShareDeploymentProjectCandidate[] = [];
 
   const labelRe = new RegExp(PROJECT_DIRECTORY_LABEL_RE.source, 'gi');
   let labelMatch: RegExpExecArray | null;
   while ((labelMatch = labelRe.exec(messageContent)) !== null) {
-    const candidate = cleanProjectDirectoryCandidate(labelMatch[1]);
-    if (isPlausibleProjectDirectoryCandidate(candidate)) detected = candidate;
+    addProjectDirectoryCandidate(
+      candidates,
+      labelMatch[1] || labelMatch[2] || '',
+      ShareDeploymentCandidateSource.TextLabeledPath,
+      85,
+      {
+        fallbackProjectDirectory,
+        reason: 'Matched an explicit project directory label in the assistant response.',
+        evidence: labelMatch[0],
+        messageId,
+      },
+    );
   }
 
   const cdRe = new RegExp(CD_COMMAND_RE.source, 'gi');
   let cdMatch: RegExpExecArray | null;
   while ((cdMatch = cdRe.exec(messageContent)) !== null) {
-    const candidate = cleanProjectDirectoryCandidate(
+    addProjectDirectoryCandidate(
+      candidates,
       cdMatch[1] || cdMatch[2] || cdMatch[3] || cdMatch[4] || '',
+      ShareDeploymentCandidateSource.TextCdCommand,
+      80,
+      {
+        fallbackProjectDirectory,
+        reason: 'Matched a cd command near the local service output.',
+        evidence: cdMatch[0],
+        messageId,
+      },
     );
-    if (isPlausibleProjectDirectoryCandidate(candidate)) detected = candidate;
   }
 
-  return detected
-    ? resolveRelativeProjectDirectory(detected, fallbackProjectDirectory)
-    : fallbackProjectDirectory?.trim() || '';
+  const fileLinkDirectories: string[] = [];
+  const fileLinkRe = new RegExp(FILE_MARKDOWN_LINK_RE.source, 'gi');
+  let fileLinkMatch: RegExpExecArray | null;
+  while ((fileLinkMatch = fileLinkRe.exec(messageContent)) !== null) {
+    const directory = fileUrlPathToDirectory(fileLinkMatch[2], fileLinkMatch[1]);
+    if (!directory) continue;
+    fileLinkDirectories.push(directory);
+    addProjectDirectoryCandidate(
+      candidates,
+      directory,
+      ShareDeploymentCandidateSource.TextFileLink,
+      82,
+      {
+        reason: 'Matched a local file link in the assistant response.',
+        evidence: fileLinkMatch[0],
+        messageId,
+      },
+    );
+  }
+
+  const commonDirectory = commonProjectDirectory(fileLinkDirectories);
+  if (commonDirectory) {
+    addProjectDirectoryCandidate(
+      candidates,
+      commonDirectory,
+      ShareDeploymentCandidateSource.TextCommonParent,
+      84,
+      {
+        reason: 'Matched the common parent directory of local file links.',
+        messageId,
+      },
+    );
+  }
+
+  return candidates;
 }
 
 export function normalizeLocalServiceUrlForDedup(url: string): string {
@@ -404,7 +639,12 @@ export function parseLocalServiceUrlsFromText(
 
   const artifacts: Artifact[] = [];
   const seenUrls = new Set<string>();
-  const projectDirectory = extractProjectDirectoryFromText(messageContent, context?.projectDirectory);
+  const projectCandidates = collectProjectDirectoryCandidatesFromText(
+    messageContent,
+    context?.projectDirectory,
+    messageId,
+  );
+  const projectDirectory = selectBestProjectDirectoryCandidate(projectCandidates)?.directory || '';
   let index = 0;
 
   const addUrl = (rawUrl: string, linkText?: string) => {
@@ -428,6 +668,9 @@ export function parseLocalServiceUrlsFromText(
         origin: normalizeLocalServiceOrigin(url),
         ...(projectDirectory
           ? { projectDirectory }
+          : {}),
+        ...(projectCandidates.length > 0
+          ? { projectCandidates }
           : {}),
       },
       createdAt: Date.now(),

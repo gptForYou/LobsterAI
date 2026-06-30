@@ -15,6 +15,7 @@ import {
 import {
   buildNodeServiceProjectPackagePlan,
   collectNodeServiceDeploymentPackageEntries,
+  collectStaticSiteDeploymentPackageEntries,
   NODE_SERVICE_DEPLOYMENT_LIMITS,
   type NodeServicePackageCollection,
   type NodeServicePackageEntry,
@@ -27,6 +28,7 @@ const COMMAND_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 const NEXT_STANDALONE_START_COMMAND = 'node server.js';
 const NITRO_OUTPUT_START_COMMAND = 'node .output/server/index.mjs';
 const STATIC_BUILD_START_COMMAND = 'node server.js';
+const STATIC_SITE_ENTRY_FILE = 'index.html';
 const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
 const NEXT_DOCUMENT_IMPORT_ERROR_PATTERN = /<Html>\s+should\s+not\s+be\s+imported\s+outside\s+of\s+pages\/_document/;
 const STALE_BUILD_OUTPUT_DIRECTORY_NAMES = [
@@ -268,8 +270,15 @@ function pruneCommand(packageManager: ShareDeploymentPackageManager): string {
   }
 }
 
-function effectiveCommand(value: string | undefined, fallback: string): string {
-  return value?.trim() ?? fallback;
+function effectiveCommand(
+  value: string | undefined,
+  fallback: string,
+  options: { blankUsesFallback?: boolean } = {},
+): string {
+  const trimmed = value?.trim();
+  if (trimmed) return trimmed;
+  if (value !== undefined && !options.blankUsesFallback) return '';
+  return fallback;
 }
 
 async function runProductionDependencyPrune(
@@ -609,8 +618,14 @@ async function hasIndexHtml(directory: string): Promise<boolean> {
   }
 }
 
-async function findStaticBuildOutputDirectory(projectDirectory: string): Promise<string | null> {
-  const directCandidates = ['dist', 'build', 'out'].map(name => path.join(projectDirectory, name));
+async function findStaticBuildOutputDirectory(
+  projectDirectory: string,
+  includeProjectRoot = false,
+): Promise<string | null> {
+  const directCandidates = [
+    ...(includeProjectRoot ? [projectDirectory] : []),
+    ...['dist', 'build', 'out'].map(name => path.join(projectDirectory, name)),
+  ];
   for (const candidate of directCandidates) {
     if (await hasIndexHtml(candidate)) return candidate;
   }
@@ -637,134 +652,14 @@ async function findStaticBuildOutputDirectory(projectDirectory: string): Promise
   return null;
 }
 
-const STATIC_SITE_ENTRY_FILE = 'index.html';
-const STATIC_SITE_SUPPORTED_EXTENSION_NAMES = new Set([
-  '.avif',
-  '.css',
-  '.csv',
-  '.docx',
-  '.eot',
-  '.gif',
-  '.html',
-  '.ico',
-  '.jpeg',
-  '.jpg',
-  '.js',
-  '.json',
-  '.map',
-  '.markdown',
-  '.md',
-  '.mermaid',
-  '.mjs',
-  '.mmd',
-  '.mp3',
-  '.mp4',
-  '.otf',
-  '.pdf',
-  '.png',
-  '.pptx',
-  '.svg',
-  '.tsv',
-  '.ttf',
-  '.txt',
-  '.wasm',
-  '.webm',
-  '.webmanifest',
-  '.webp',
-  '.woff',
-  '.woff2',
-  '.xlsx',
-  '.xml',
-]);
-
-function isSupportedStaticDeploymentFileName(name: string): boolean {
-  return STATIC_SITE_SUPPORTED_EXTENSION_NAMES.has(path.extname(name).toLowerCase());
-}
-
-async function collectStaticOutputDirectoryEntries(
-  sourceDirectory: string,
-): Promise<NodeServicePackageCollection> {
-  const entriesByArchiveName = new Map<string, NodeServicePackageEntry>();
-  const state = {
-    totalBytes: 0,
-    excludedCount: 0,
-    blockers: [] as string[],
-  };
-
-  async function walk(directory: string, archivePrefix: string): Promise<void> {
-    if (state.blockers.length > 0) return;
-
-    let children: fs.Dirent[];
-    try {
-      children = await fs.promises.readdir(directory, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const child of children) {
-      if (state.blockers.length > 0) return;
-
-      const absolutePath = path.join(directory, child.name);
-      const relativeName = archivePrefix
-        ? path.posix.join(archivePrefix, child.name)
-        : child.name;
-
-      if (isBlockedDeploymentFileName(child.name) || child.isSymbolicLink()) {
-        state.excludedCount += 1;
-        continue;
-      }
-
-      if (child.isDirectory()) {
-        await walk(absolutePath, relativeName);
-        continue;
-      }
-
-      if (!child.isFile() || !isSupportedStaticDeploymentFileName(child.name)) {
-        state.excludedCount += 1;
-        continue;
-      }
-
-      const stat = await fs.promises.stat(absolutePath);
-      state.totalBytes += stat.size;
-      entriesByArchiveName.set(relativeName, {
-        absolutePath,
-        archiveName: relativeName,
-        size: stat.size,
-      });
-
-      if (entriesByArchiveName.size > NODE_SERVICE_DEPLOYMENT_LIMITS.MaxFiles) {
-        state.blockers.push(`Project has more than ${NODE_SERVICE_DEPLOYMENT_LIMITS.MaxFiles} files after exclusions.`);
-        return;
-      }
-      if (state.totalBytes > NODE_SERVICE_DEPLOYMENT_LIMITS.MaxDeploymentTotalBytes) {
-        state.blockers.push(
-          `Project files exceed ${Math.floor(NODE_SERVICE_DEPLOYMENT_LIMITS.MaxDeploymentTotalBytes / 1024 / 1024)}MB after exclusions.`,
-        );
-        return;
-      }
-    }
-  }
-
-  await walk(sourceDirectory, '');
-
-  return {
-    entries: Array.from(entriesByArchiveName.values()).sort((a, b) => a.archiveName.localeCompare(b.archiveName)),
-    totalBytes: state.totalBytes,
-    excludedCount: state.excludedCount,
-    warnings: state.excludedCount > 0
-      ? [`${state.excludedCount} files or directories will be excluded from the static deployment package.`]
-      : [],
-    blockers: state.blockers,
-  };
-}
-
 async function collectStaticBuildDeploymentPackageEntries(
   projectDirectory: string,
+  includeProjectRoot = false,
 ): Promise<NodeServicePackageCollection | null> {
-  const staticOutputDirectory = await findStaticBuildOutputDirectory(projectDirectory);
+  const staticOutputDirectory = await findStaticBuildOutputDirectory(projectDirectory, includeProjectRoot);
   if (!staticOutputDirectory) return null;
 
-  return await collectStaticOutputDirectoryEntries(staticOutputDirectory);
+  return await collectStaticSiteDeploymentPackageEntries(staticOutputDirectory);
 }
 
 interface OptimizedDeploymentPackage {
@@ -799,8 +694,8 @@ async function collectOptimizedDeploymentPackage(
     };
   }
 
-  if (isStaticBuildPackageJson(packageJson) || isNextPackageJson(packageJson)) {
-    const staticCollection = await collectStaticBuildDeploymentPackageEntries(projectDirectory);
+  if (isStaticBuildPackageJson(packageJson) || isNextPackageJson(packageJson) || !packageJson) {
+    const staticCollection = await collectStaticBuildDeploymentPackageEntries(projectDirectory, !packageJson);
     if (staticCollection && staticCollection.blockers.length === 0) {
       return {
         collection: staticCollection,
@@ -829,9 +724,26 @@ export async function packageNodeServiceDeployment(
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lobster-node-build-'));
   const projectDir = path.join(tempDir, 'project');
   const commandWarnings: string[] = [];
-  const installCommand = effectiveCommand(input.installCommand, plan.analysis.installCommand);
-  const buildCommand = effectiveCommand(input.buildCommand, plan.analysis.buildCommand);
-  const startCommand = effectiveCommand(input.startCommand, plan.analysis.startCommand);
+  const isPlainStaticDeployment =
+    plan.analysis.deploymentKind === ShareDeploymentKind.StaticSite &&
+    plan.analysis.packageManager === ShareDeploymentPackageManager.Unknown;
+  const installCommand = isPlainStaticDeployment
+    ? ''
+    : effectiveCommand(
+        input.installCommand,
+        plan.analysis.installCommand,
+        { blankUsesFallback: plan.analysis.deploymentKind === ShareDeploymentKind.StaticSite },
+      );
+  const buildCommand = isPlainStaticDeployment
+    ? ''
+    : effectiveCommand(
+        input.buildCommand,
+        plan.analysis.buildCommand,
+        { blankUsesFallback: plan.analysis.deploymentKind === ShareDeploymentKind.StaticSite },
+      );
+  const startCommand = isPlainStaticDeployment
+    ? ''
+    : effectiveCommand(input.startCommand, plan.analysis.startCommand);
   const port = input.port ?? plan.analysis.port;
 
   try {

@@ -96,11 +96,14 @@ import {
 import { PlatformRegistry } from '../shared/platform';
 import { OpenClawProviderId, ProviderName } from '../shared/providers';
 import {
+  ShareDeploymentCandidateSource,
   type ShareDeploymentCreateNodeInput,
+  type ShareDeploymentDetectCandidatesInput,
   type ShareDeploymentGetByLocalServiceInput,
   ShareDeploymentIpc,
   ShareDeploymentKind,
   ShareDeploymentPackageManager,
+  type ShareDeploymentProjectCandidate,
 } from '../shared/shareDeployment/constants';
 import type { ShellOpenFailureReason as ShellOpenFailureReasonType } from '../shared/shell/constants';
 import { type ShellGetBrowserAppsInput, ShellIpc, ShellOpenFailureReason } from '../shared/shell/constants';
@@ -370,6 +373,10 @@ const IPC_MAX_KEYS = 80;
 const IPC_MAX_ITEMS = 40;
 const MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ARTIFACT_SHARE_CONTENT_CHARS = 30 * 1024 * 1024;
+const SHARE_DEPLOYMENT_PROJECT_CANDIDATE_MAX_ITEMS = 24;
+const SHARE_DEPLOYMENT_CANDIDATE_SOURCES = new Set<string>(
+  Object.values(ShareDeploymentCandidateSource),
+);
 const ENGINE_NOT_READY_CODE = 'ENGINE_NOT_READY';
 const LOCAL_WEB_SERVICE_PROBE_TIMEOUT_MS = 700;
 const LOCAL_WEB_SERVICE_TITLE_MAX_LENGTH = 80;
@@ -445,11 +452,6 @@ interface HtmlShareUpdateStatusInput {
 interface HtmlShareUpdateAccessModeInput {
   shareId: string;
   accessMode: HtmlShareAccessModeValue;
-}
-
-interface ShareDeploymentDetectProjectCandidatesInput {
-  localServiceUrl: string;
-  workingDirectory?: string;
 }
 
 interface ShareDeploymentAnalyzeProjectDirectoryInput {
@@ -675,9 +677,106 @@ function sanitizeUpdateHtmlShareAccessModeInput(input: unknown): HtmlShareUpdate
   };
 }
 
+function sanitizeOptionalShareDeploymentCandidateText(
+  value: unknown,
+  fieldName: string,
+  maxLength = 1024,
+): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > maxLength) {
+    throw new Error(`${fieldName} is too long.`);
+  }
+  return trimmed;
+}
+
+function sanitizeShareDeploymentCandidateSource(
+  value: unknown,
+): ShareDeploymentProjectCandidate['source'] | null {
+  if (typeof value !== 'string') return null;
+  return SHARE_DEPLOYMENT_CANDIDATE_SOURCES.has(value)
+    ? value as ShareDeploymentProjectCandidate['source']
+    : null;
+}
+
+function sanitizeShareDeploymentCandidateConfidence(value: unknown): number {
+  const confidence = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(confidence)) return 0;
+  return Math.max(0, Math.min(100, Math.round(confidence)));
+}
+
+function sanitizeOptionalShareDeploymentCandidateInteger(
+  value: unknown,
+): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const numberValue = typeof value === 'number' ? value : Number(value);
+  return Number.isInteger(numberValue) && numberValue >= 0 ? numberValue : undefined;
+}
+
+function sanitizeShareDeploymentProjectCandidate(
+  value: unknown,
+  index: number,
+): ShareDeploymentProjectCandidate | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const directory = sanitizeOptionalShareDeploymentCandidateText(
+    source.directory,
+    `projectCandidates[${index}].directory`,
+    4096,
+  );
+  if (!directory) return null;
+  const candidateSource = sanitizeShareDeploymentCandidateSource(source.source);
+  if (!candidateSource) return null;
+  const reason = sanitizeOptionalShareDeploymentCandidateText(
+    source.reason,
+    `projectCandidates[${index}].reason`,
+  );
+  const evidence = sanitizeOptionalShareDeploymentCandidateText(
+    source.evidence,
+    `projectCandidates[${index}].evidence`,
+    2048,
+  );
+  const messageId = sanitizeOptionalShareDeploymentCandidateText(
+    source.messageId,
+    `projectCandidates[${index}].messageId`,
+    128,
+  );
+  const artifactId = sanitizeOptionalShareDeploymentCandidateText(
+    source.artifactId,
+    `projectCandidates[${index}].artifactId`,
+    128,
+  );
+  const pid = sanitizeOptionalShareDeploymentCandidateInteger(source.pid);
+  const detectedAt = sanitizeOptionalShareDeploymentCandidateInteger(source.detectedAt);
+  return {
+    directory,
+    source: candidateSource,
+    confidence: sanitizeShareDeploymentCandidateConfidence(source.confidence),
+    ...(reason ? { reason } : {}),
+    ...(evidence ? { evidence } : {}),
+    ...(messageId ? { messageId } : {}),
+    ...(artifactId ? { artifactId } : {}),
+    ...(pid !== undefined ? { pid } : {}),
+    ...(detectedAt !== undefined ? { detectedAt } : {}),
+  };
+}
+
+function sanitizeShareDeploymentProjectCandidates(value: unknown): ShareDeploymentProjectCandidate[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error('projectCandidates must be an array.');
+  }
+  return value
+    .slice(0, SHARE_DEPLOYMENT_PROJECT_CANDIDATE_MAX_ITEMS)
+    .map((candidate, index) => sanitizeShareDeploymentProjectCandidate(candidate, index))
+    .filter((candidate): candidate is ShareDeploymentProjectCandidate => Boolean(candidate));
+}
+
 function sanitizeShareDeploymentDetectProjectCandidatesInput(
   input: unknown,
-): ShareDeploymentDetectProjectCandidatesInput {
+): ShareDeploymentDetectCandidatesInput {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('Invalid deployment project detection request.');
   }
@@ -685,6 +784,12 @@ function sanitizeShareDeploymentDetectProjectCandidatesInput(
   return {
     localServiceUrl: sanitizeHtmlShareString(source.localServiceUrl, 'localServiceUrl', 2048),
     workingDirectory: sanitizeOptionalHtmlShareString(source.workingDirectory, 'workingDirectory', 4096),
+    projectCandidates: sanitizeShareDeploymentProjectCandidates(source.projectCandidates),
+    cachedProjectDirectory: sanitizeOptionalHtmlShareString(
+      source.cachedProjectDirectory,
+      'cachedProjectDirectory',
+      4096,
+    ),
   };
 }
 
@@ -724,7 +829,7 @@ function sanitizeShareDeploymentCreateNodeInput(input: unknown): ShareDeployment
     nodeVersion: sanitizeHtmlShareString(source.nodeVersion, 'nodeVersion', 32),
     installCommand: sanitizeOptionalShareDeploymentCommand(source.installCommand, 'installCommand'),
     buildCommand: sanitizeOptionalShareDeploymentCommand(source.buildCommand, 'buildCommand'),
-    startCommand: sanitizeHtmlShareString(source.startCommand, 'startCommand', 512),
+    startCommand: sanitizeOptionalShareDeploymentCommand(source.startCommand, 'startCommand'),
     port: sanitizeShareDeploymentPort(source.port),
   };
 }
@@ -5315,7 +5420,7 @@ if (!gotTheLock) {
         projectDirectory: '',
         packageManager: ShareDeploymentPackageManager.Unknown,
         nodeVersion: '20',
-        installCommand: 'npm ci',
+        installCommand: 'npm install',
         buildCommand: '',
         startCommand: '',
         totalFiles: 0,

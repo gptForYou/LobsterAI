@@ -1,3 +1,5 @@
+import type { ShareDeploymentProjectCandidate } from '../../shared/shareDeployment/constants';
+
 export const ArtifactTypeValue = {
   Html: 'html',
   Svg: 'svg',
@@ -18,6 +20,7 @@ export interface LocalServiceArtifactMetadata {
   url: string;
   origin: string;
   projectDirectory?: string;
+  projectCandidates?: ShareDeploymentProjectCandidate[];
 }
 
 export const PREVIEWABLE_ARTIFACT_TYPES = new Set<ArtifactType>([
