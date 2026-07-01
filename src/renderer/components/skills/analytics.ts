@@ -56,7 +56,7 @@ export function getMarketplaceSkillAnalyticsParams(
     marketplaceVersion: skill.version,
     hasUpdate,
     tags: serializeSkillAnalyticsList(skill.tags ?? []),
-    sourceType: skill.source?.from,
+    sourceType: 'marketplace',
   };
 }
 

@@ -345,7 +345,7 @@ export const LogReporterActionPrefix = {
 - 事件含义：统计 Agent 引擎维护动作的结果。
 - 业务参数：
   - `actionType`：string，维护动作类型。当前取值包括 `repair_gateway_state`、`backup_data`、`restore_data`。
-  - `result`：string，动作结果。当前取值包括 `success`、`failed`、`started`。
+  - `result`：string，动作结果。当前取值包括 `success`、`failed`。数据恢复成功后即使需要自动重启，也上报 `success`。
   - `errorCode`：string，失败分类；无法识别时为 `unknown`。仅失败时发送。
   - `sizeBytes`：number，备份文件大小；仅 `backup_data` 成功且可获取时发送。
   - `source`：string，触发来源。当前固定为 `settings_agent_engine`。
@@ -357,7 +357,7 @@ export const LogReporterActionPrefix = {
 - 触发时机：用户在「设置 -> 自定义模型」修改 provider 或模型配置，并成功保存后发送；删除自定义 provider 这类即时持久化动作在确认删除且持久化成功后发送。未保存、保存失败或仅切换 provider tab 不发送。
 - 事件含义：用较粗粒度统计用户自定义模型配置情况，避免对每个输入框或每个模型编辑动作做过细埋点。
 - 发送口径：
-  - 根据保存前后的 `providers` 配置做 diff，仅当 provider 开关、API 协议、Coding Plan 开关、鉴权类型、provider 数量或模型数量发生变化时发送。
+  - 根据保存前后的 `providers` 配置做 diff，仅当 provider 开关、API 协议、Coding Plan 开关、鉴权类型、provider 数量、模型数量或模型配置摘要发生变化时发送。
   - 同一次保存只发送一条摘要事件，不按 provider 或 model 逐条发送。
   - 自定义 provider 的新增、删除、启用状态变化，都归入该摘要事件。
 - 业务参数：
@@ -370,9 +370,10 @@ export const LogReporterActionPrefix = {
   - `customProviderModelCount`：number，保存后的自定义 provider 模型数量。
   - `hasLocalProviderEnabled`：boolean，保存后是否启用了本地模型 provider，例如 `ollama` 或 `lm-studio`。
   - `hasCodingPlanEnabled`：boolean，保存后是否存在已开启 Coding Plan 的 provider。
-  - `changedKeys`：string，本次变化类型的去重列表，使用逗号分隔。当前规划取值包括 `provider_enabled`、`provider_count`、`api_format`、`coding_plan`、`auth_type`、`model_count`。
+  - `changedKeys`：string，本次变化类型的去重列表，使用逗号分隔。当前规划取值包括 `provider_enabled`、`provider_count`、`api_format`、`coding_plan`、`auth_type`、`model_count`、`model_config`。
 - 隐私边界：
   - 不上传 API Key、OAuth token、base URL、provider displayName、模型名称、模型 ID、customParams、导入/导出文件名或本地路径。
+  - `model_config` 只表示模型配置摘要发生变化；用于本地 diff 的模型名称、模型 ID、上下文长度、能力开关和 customParams 不会作为日志参数上传。
   - 不上传具体自定义 provider 编号列表，只上传数量和是否启用等摘要字段。
   - `modelCount` 仅用于统计配置规模，不表达用户是否实际使用某个模型；实际选择模型仍以 `lobsterai_model_selected` 为准。
 
@@ -418,15 +419,14 @@ export const LogReporterActionPrefix = {
 #### 2.4.15 `lobsterai_im_gateway_toggled`
 
 - 状态：已实现。
-- 触发时机：用户在「设置 -> IM 机器人」启动或停止某个平台网关并得到结果后发送。
-- 事件含义：统计 IM 网关启停使用情况和失败率。
+- 触发时机：用户在「设置 -> IM 机器人」启动或停止单实例平台网关并得到结果后发送。多实例平台的实例启停不发送本事件，统一走 `lobsterai_im_instance_changed`。
+- 事件含义：统计单实例 IM 网关启停使用情况和失败率。
 - 业务参数：
   - `source`：string，触发来源。当前固定为 `settings_im`。
   - `platform`：string，被操作的 IM 平台。
   - `operation`：string，当前取值为 `start` 或 `stop`。
   - `result`：string，当前取值为 `success` 或 `failed`。
-  - `platformKind`：string，平台形态。当前取值为 `single_instance` 或 `multi_instance`。
-  - `enabledInstanceCount`：number，多实例平台当前启用实例数量；单实例平台不发送。
+  - `platformKind`：string，平台形态。当前取值为 `single_instance`。
   - `failureReason`：string，失败分类；无法识别时为 `unknown`。仅失败时发送。
 - 隐私边界：不上传网关错误详情、账号信息、token、secret、会话 ID 或本地日志内容。
 
@@ -795,9 +795,9 @@ export const LogReporterActionPrefix = {
   - `cronExpr`：string，cron 表达式。该字段不包含用户正文或目标账号，用于分析定时频率偏好。
   - `cronTz`：string，cron 时区。
   - `hour` / `minute`：number，计划触发时间的小时和分钟。
-  - `weekdayCount`：number，选择的星期数量。
-  - `weekdays`：string，选择的星期列表，以英文逗号连接。
-  - `monthDay`：number，月度计划的日期。
+  - `weekdayCount`：number，选择的星期数量；仅周计划发送。
+  - `weekdays`：string，选择的星期列表，以英文逗号连接；仅周计划发送，支持多个星期值，例如 `1,2,3,4,5`。
+  - `monthDay`：number，月度计划的日期；仅月计划发送。
   - `everyMs`：number，`every` 类型计划的间隔毫秒数。
   - `payloadKind`：string，任务 payload 类型；当前取值为 `agentTurn` 或 `systemEvent`。
   - `payloadTextLength`：number，prompt/payload 文本长度。

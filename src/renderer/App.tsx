@@ -376,8 +376,15 @@ const App: React.FC = () => {
   }, [dispatch]);
 
   const handleToggleSidebar = useCallback(() => {
+    void reportYdAnalyzer({
+      action: LogReporterAction.SidebarAction,
+      source: 'home_sidebar',
+      actionType: isSidebarCollapsed ? 'expand_sidebar' : 'collapse_sidebar',
+      activeView: mainView,
+      isCollapsed: isSidebarCollapsed,
+    });
     setIsSidebarCollapsed((prev) => !prev);
-  }, []);
+  }, [isSidebarCollapsed, mainView]);
 
   const handleNewChat = useCallback(() => {
     // Only clear when already on home (no session) — preserve __home__ draft when returning from a session

@@ -251,6 +251,32 @@ const countProviderModels = (providerConfig?: ProviderConfig): number => (
   Array.isArray(providerConfig?.models) ? providerConfig.models.length : 0
 );
 
+const sortAnalyticsObject = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(sortAnalyticsObject);
+  }
+  if (value && typeof value === 'object') {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((sorted, key) => {
+        sorted[key] = sortAnalyticsObject((value as Record<string, unknown>)[key]);
+        return sorted;
+      }, {});
+  }
+  return value;
+};
+
+const serializeProviderModelsForAnalyticsDiff = (providerConfig?: ProviderConfig): string => (
+  JSON.stringify((providerConfig?.models ?? []).map(model => ({
+    contextWindow: model.contextWindow,
+    customParams: sortAnalyticsObject(model.customParams),
+    id: model.id,
+    name: model.name,
+    supportsImage: model.supportsImage === true,
+    supportsThinking: model.supportsThinking === true,
+  })))
+);
+
 const getProviderAuthTypeForAnalytics = (providerConfig?: ProviderConfig): string => (
   providerConfig?.authType || ProviderAuthType.ApiKey
 );
@@ -299,6 +325,10 @@ const buildCustomModelSettingsAnalyticsSummary = (
     }
     if (countProviderModels(previousProvider) !== countProviderModels(nextProvider)) {
       changedKeys.add('model_count');
+      providerChanged = true;
+    }
+    if (serializeProviderModelsForAnalyticsDiff(previousProvider) !== serializeProviderModelsForAnalyticsDiff(nextProvider)) {
+      changedKeys.add('model_config');
       providerChanged = true;
     }
 
@@ -2657,10 +2687,8 @@ const Settings: React.FC<SettingsProps> = ({
       if (result.scheduledRestart) {
         keepLoadingUntilRestart = true;
         setNoticeMessage(i18nService.t('openClawDataMigrationRestarting'));
-        reportAgentEngineMaintenanceAction('restore_data', 'started');
-      } else {
-        reportAgentEngineMaintenanceAction('restore_data', 'success');
       }
+      reportAgentEngineMaintenanceAction('restore_data', 'success');
     } catch (restoreError) {
       setError(restoreError instanceof Error ? restoreError.message : i18nService.t('openClawDataMigrationFailed'));
       reportAgentEngineMaintenanceAction('restore_data', 'failed', { errorCode: 'unknown' });

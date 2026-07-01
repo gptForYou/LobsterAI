@@ -433,6 +433,14 @@ export function scheduleToPlanInfo(schedule: Schedule): PlanInfo {
   }
 
   // Weekly: M H * * DOW,DOW,... (comma-separated)
+  if (dom && dom.type === 'any' && dow && dow.type === 'list') {
+    const days = [...new Set(dow.values)].sort((a, b) => a - b);
+    if (days.length > 0 && days.every(d => d >= 0 && d <= 6)) {
+      return { ...base, planType: 'weekly', weekday: days[0], weekdays: days };
+    }
+  }
+
+  // Weekly: M H * * DOW,DOW,... (fallback for unsupported comma syntax)
   if (dom && dom.type === 'any' && dow === null) {
     const days = parseCommaSeparated(dowRaw);
     if (days && days.length > 0 && days.every(d => d >= 0 && d <= 6)) {

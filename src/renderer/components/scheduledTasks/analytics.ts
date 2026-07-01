@@ -114,9 +114,9 @@ export function getScheduleAnalyticsParams(schedule: Schedule): AnalyticsParams 
       ...base,
       cronExpr: schedule.expr,
       cronTz: schedule.tz,
-      weekdayCount: planInfo.weekdays.length,
-      weekdays: serializeAnalyticsList(planInfo.weekdays),
-      monthDay: planInfo.monthDay,
+      weekdayCount: planInfo.planType === 'weekly' ? planInfo.weekdays.length : undefined,
+      weekdays: planInfo.planType === 'weekly' ? serializeAnalyticsList(planInfo.weekdays) : undefined,
+      monthDay: planInfo.planType === 'monthly' ? planInfo.monthDay : undefined,
     };
   }
 
@@ -202,8 +202,8 @@ export function getFormScheduleAnalyticsParams(params: {
     cronTz: params.planType === 'cron' ? params.cronTz : undefined,
     hour: params.hour,
     minute: params.minute,
-    weekdayCount: params.weekdays.length,
-    weekdays: serializeAnalyticsList(params.weekdays),
-    monthDay: params.monthDay,
+    weekdayCount: params.planType === 'weekly' ? params.weekdays.length : undefined,
+    weekdays: params.planType === 'weekly' ? serializeAnalyticsList(params.weekdays) : undefined,
+    monthDay: params.planType === 'monthly' ? params.monthDay : undefined,
   };
 }

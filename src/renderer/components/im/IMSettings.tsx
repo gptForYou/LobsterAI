@@ -105,6 +105,7 @@ const MULTI_INSTANCE_PLATFORMS = new Set<Platform>([
 
 type IMAnalyticsPlatformKind = 'single_instance' | 'multi_instance';
 type IMAnalyticsInstanceOperation = 'added' | 'deleted' | 'enabled' | 'disabled';
+type IMAnalyticsGatewayOperation = 'start' | 'stop';
 
 const IM_CREDENTIAL_FIELDS = [
   'account',
@@ -305,6 +306,23 @@ const reportIMInstanceChanged = (
     operation,
     instanceCount,
     enabledInstanceCount,
+  });
+};
+
+const reportIMGatewayToggledAction = (
+  platform: Platform,
+  operation: IMAnalyticsGatewayOperation,
+  result: 'success' | 'failed',
+  failureReason?: string,
+): void => {
+  void reportYdAnalyzer({
+    action: LogReporterAction.ImGatewayToggled,
+    source: IMAnalyticsSource.Settings,
+    platform,
+    operation,
+    result,
+    platformKind: getIMPlatformKind(platform),
+    failureReason,
   });
 };
 
@@ -959,12 +977,16 @@ const IMSettings: React.FC = () => {
 
       if (platform === 'weixin') {
         const newEnabled = !weixinOpenClawConfig.enabled;
+        const operation: IMAnalyticsGatewayOperation = newEnabled ? 'start' : 'stop';
         const success = await imService.updateConfig({ weixin: { ...weixinOpenClawConfig, enabled: newEnabled } });
         if (success) {
           dispatch(setWeixinConfig({ enabled: newEnabled }));
           setSaveReminderTarget(platform, null, newEnabled);
           if (newEnabled) dispatch(clearError());
           await imService.loadStatus();
+          reportIMGatewayToggledAction(platform, operation, 'success');
+        } else {
+          reportIMGatewayToggledAction(platform, operation, 'failed', 'config_update_failed');
         }
         return;
       }
@@ -976,6 +998,7 @@ const IMSettings: React.FC = () => {
 
       const isEnabled = config[platform].enabled;
       const newEnabled = !isEnabled;
+      const operation: IMAnalyticsGatewayOperation = newEnabled ? 'start' : 'stop';
 
       // Map platform to its Redux action
       const setConfigAction = getSetConfigAction(platform);
@@ -987,6 +1010,9 @@ const IMSettings: React.FC = () => {
         setSaveReminderTarget(platform, null, newEnabled);
         if (newEnabled) dispatch(clearError());
         await imService.loadStatus();
+        reportIMGatewayToggledAction(platform, operation, 'success');
+      } else {
+        reportIMGatewayToggledAction(platform, operation, 'failed', 'config_update_failed');
       }
     } finally {
       setTogglingPlatform(null);

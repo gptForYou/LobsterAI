@@ -531,13 +531,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           <div className={`${isMac ? 'pl-[68px]' : ''}`}>{updateBadge}</div>
           <button
             type="button"
-            onClick={() => {
-              reportSidebarAction(isCollapsed ? 'expand_sidebar' : 'collapse_sidebar', {
-                activeView,
-                isCollapsed,
-              });
-              onToggleCollapse();
-            }}
+            onClick={onToggleCollapse}
             className="non-draggable h-8 w-8 inline-flex items-center justify-center rounded-lg text-secondary hover:bg-surface-raised transition-colors"
             aria-label={isCollapsed ? i18nService.t('expand') : i18nService.t('collapse')}
           >

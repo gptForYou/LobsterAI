@@ -3,12 +3,14 @@ import { describe, expect, test } from 'vitest';
 import { DeliveryMode, PayloadKind, ScheduleKind, SessionTarget, WakeMode } from '../../../scheduledTask/constants';
 import type { ScheduledTask } from '../../../scheduledTask/types';
 import { i18nService } from '../../services/i18n';
+import { getScheduleAnalyticsParams } from './analytics';
 import { createScheduledTaskFormState } from './TaskForm';
 import {
   SCHEDULED_TASK_TEMPLATES,
   ScheduledTaskTemplateId,
   ScheduledTaskTemplatePlanType,
 } from './taskTemplates';
+import { scheduleToPlanInfo } from './utils';
 
 const fallbackModelRef = 'openai/gpt-5.5';
 
@@ -93,5 +95,44 @@ describe('createScheduledTaskFormState', () => {
     expect(form.minute).toBe(30);
     expect(form.weekdays).toEqual([1, 2, 3, 4, 5]);
     expect(form.modelId).toBe(fallbackModelRef);
+  });
+});
+
+describe('scheduleToPlanInfo', () => {
+  test('parses comma-separated weekdays from cron schedules', () => {
+    const planInfo = scheduleToPlanInfo({
+      kind: ScheduleKind.Cron,
+      expr: '30 8 * * 1,2,3,4,5',
+    });
+
+    expect(planInfo.planType).toBe('weekly');
+    expect(planInfo.weekdays).toEqual([1, 2, 3, 4, 5]);
+    expect(planInfo.monthDay).toBe(1);
+  });
+});
+
+describe('getScheduleAnalyticsParams', () => {
+  test('reports weekdays only for weekly cron schedules', () => {
+    const params = getScheduleAnalyticsParams({
+      kind: ScheduleKind.Cron,
+      expr: '30 8 * * 1,2,3,4,5',
+    });
+
+    expect(params.planType).toBe('weekly');
+    expect(params.weekdayCount).toBe(5);
+    expect(params.weekdays).toBe('1,2,3,4,5');
+    expect(params.monthDay).toBeUndefined();
+  });
+
+  test('reports monthDay only for monthly cron schedules', () => {
+    const params = getScheduleAnalyticsParams({
+      kind: ScheduleKind.Cron,
+      expr: '30 8 15 * *',
+    });
+
+    expect(params.planType).toBe('monthly');
+    expect(params.monthDay).toBe(15);
+    expect(params.weekdayCount).toBeUndefined();
+    expect(params.weekdays).toBeUndefined();
   });
 });
