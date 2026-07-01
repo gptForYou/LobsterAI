@@ -38,9 +38,9 @@ Add a LobsterAI client goal mode that mirrors OpenClaw's session-goal model:
 - Goal mode is not a task list. A session has at most one goal.
 - LobsterAI will not create an independent goal persistence layer while
   OpenClaw owns goal state.
-- The first client implementation does not patch OpenClaw to add a dedicated
-  goal RPC. It can use `/goal` commands for mutations and `sessions.list.goal`
-  for state.
+- LobsterAI does not expose `/goal` command text as normal user-visible chat
+  content when the goal UI is used. Existing-session goal mutations use the
+  OpenClaw `sessions.goal` RPC.
 
 ## 4. User Experience
 
@@ -108,10 +108,13 @@ current session. Streamed `goalUpdate` events update both places.
 
 ### 5.4 Mutations
 
-Until OpenClaw exposes a direct goal RPC, LobsterAI sends goal commands through
-the existing Cowork continue path. After a command finishes or is acknowledged,
-the renderer reloads the current session and/or waits for the next goal update
-from `sessions.list`.
+For existing sessions, LobsterAI sends goal mutations through the OpenClaw
+`sessions.goal` RPC. `start`, `create`, `set`, and `resume` may trigger a
+normal continuation only when the session is not already running; `pause`,
+`complete`, `block`, and `clear` are operator mutations and do not create a new
+chat turn. New-session goal input still starts the session through the normal
+Cowork path with a `/goal start ...` prompt so OpenClaw can attach the goal to
+the new session key.
 
 ## 6. State Model
 
@@ -164,9 +167,9 @@ interface CoworkGoal {
 
 | Risk | Mitigation |
 | --- | --- |
-| `/goal` command turns add visible command messages | Prefer a direct OpenClaw goal RPC when available; keep the command fallback isolated in a service method so it can be replaced. |
+| `/goal` command turns add visible command messages | Existing-session mutations use `sessions.goal`; local title/message display strips goal command prefixes for new-session bootstrap turns. |
 | Stale goal cache after OpenClaw restart | Treat cache as display-only and refresh from `sessions.list` whenever session rows are polled. |
-| Goal controls conflict with running turns | Disable mutating controls while Cowork is streaming, except stop remains the existing run control. |
+| Goal controls conflict with running turns | Route controls through `sessions.goal` instead of normal chat; the RPC resolves aliases that already contain a goal before mutating. |
 | Long objectives overflow the input chrome | Use stable chip dimensions, truncation, and tooltip/title text. |
 
 ## 9. Verification

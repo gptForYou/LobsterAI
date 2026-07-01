@@ -1145,6 +1145,44 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       return;
     }
 
+    if (goalInputActive && sessionId && onGoalCommand) {
+      const goalCommand = `/goal ${goalInputMode} ${trimmedValue}`;
+      console.debug(`[CoworkGoal] submitting goal command via goal IPC for session ${sessionId}.`);
+      const accepted = await Promise.resolve(onGoalCommand(goalCommand)).then((result) => result !== false).catch((error) => {
+        console.warn(`[CoworkGoal] failed to submit goal command for session ${sessionId}.`, error);
+        return false;
+      });
+      if (!accepted) {
+        reportPromptControl('submit_blocked', {
+          blockedReason: 'goal_command_rejected',
+          submitMethod: effectiveSubmitMethod,
+          ...getPromptTextAnalyticsParams(trimmedValue),
+          ...getPromptCapabilityAnalyticsParams(),
+        });
+        return;
+      }
+      setValue('');
+      dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
+      setGoalInputActive(false);
+      setShowAddMenu(false);
+      reportPromptSubmit({
+        ...getPromptContextAnalyticsParams(),
+        submitMethod: effectiveSubmitMethod,
+        promptLength: trimmedValue.length,
+        promptLineCount: trimmedValue.length > 0 ? trimmedValue.split('\n').length : 0,
+        hasPrompt: trimmedValue.length > 0,
+        params: {
+          ...getPromptCapabilityAnalyticsParams(),
+          ...getPromptTextAnalyticsParams(trimmedValue),
+          inputSource: getPromptInputSource(effectiveSubmitMethod, 0),
+          mediaReferenceCount: 0,
+          selectedTextSnippetCount: selectedTextSnippets.length,
+          effectiveCollaborationMode,
+        },
+      });
+      return;
+    }
+
     // Get selected skill routing metadata, including skills from active kits.
     // OpenClaw loads SKILL.md files natively; do not inline full skill bodies here.
     const kitSkillIds = activeKitIds.flatMap(kitId => getInstalledKitSkillIds(installedKits[kitId]));
@@ -1293,43 +1331,6 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         imageAttachmentCount: attachments.filter(a => a.isImage || isImagePath(a.path)).length,
         imageAttachmentDataUrlCount: attachments.filter(a => (a.isImage || isImagePath(a.path)) && a.dataUrl).length,
       });
-    }
-
-    if (goalInputActive && sessionId && onGoalCommand) {
-      console.debug(`[CoworkGoal] submitting goal command via goal IPC for session ${sessionId}.`);
-      const accepted = await Promise.resolve(onGoalCommand(finalPrompt)).then((result) => result !== false).catch((error) => {
-        console.warn(`[CoworkGoal] failed to submit goal command for session ${sessionId}.`, error);
-        return false;
-      });
-      if (!accepted) {
-        reportPromptControl('submit_blocked', {
-          blockedReason: 'goal_command_rejected',
-          submitMethod: effectiveSubmitMethod,
-          ...getPromptTextAnalyticsParams(trimmedValue),
-          ...getPromptCapabilityAnalyticsParams(),
-        });
-        return;
-      }
-      setValue('');
-      dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
-      setGoalInputActive(false);
-      setShowAddMenu(false);
-      reportPromptSubmit({
-        ...getPromptContextAnalyticsParams(),
-        submitMethod: effectiveSubmitMethod,
-        promptLength: trimmedValue.length,
-        promptLineCount: trimmedValue.length > 0 ? trimmedValue.split('\n').length : 0,
-        hasPrompt: trimmedValue.length > 0,
-        params: {
-          ...getPromptCapabilityAnalyticsParams(),
-          ...getPromptTextAnalyticsParams(trimmedValue),
-          inputSource: getPromptInputSource(effectiveSubmitMethod, 0),
-          mediaReferenceCount: 0,
-          selectedTextSnippetCount: selectedTextSnippets.length,
-          effectiveCollaborationMode,
-        },
-      });
-      return;
     }
 
     // Resolve @media tokens into MediaAttachmentRef array

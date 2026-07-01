@@ -851,6 +851,14 @@ class CoworkService {
       'debug',
       `running goal command for session ${options.sessionId}, action ${action}`,
     );
+    const stateBeforeGoalCommand = store.getState();
+    const currentSessionBeforeGoalCommand = stateBeforeGoalCommand.cowork.currentSession?.id === options.sessionId
+      ? stateBeforeGoalCommand.cowork.currentSession
+      : undefined;
+    const listedSessionBeforeGoalCommand = stateBeforeGoalCommand.cowork.sessions.find(
+      session => session.id === options.sessionId,
+    );
+    const previousStatus = currentSessionBeforeGoalCommand?.status ?? listedSessionBeforeGoalCommand?.status;
     if (mayStartRun) {
       store.dispatch(setStreaming(true));
       store.dispatch(updateSessionStatus({ sessionId: options.sessionId, status: 'running' }));
@@ -862,6 +870,9 @@ class CoworkService {
     if (!result.success) {
       if (mayStartRun) {
         store.dispatch(setStreaming(false));
+        if (previousStatus && previousStatus !== 'running') {
+          store.dispatch(updateSessionStatus({ sessionId: options.sessionId, status: previousStatus }));
+        }
       }
       if (result.engineStatus) {
         this.notifyOpenClawStatus(result.engineStatus);
