@@ -1,7 +1,22 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+
+vi.mock('electron', () => ({
+  app: {
+    getAppPath: () => process.cwd(),
+    getName: () => 'LobsterAI',
+    getPath: (name: string) => (name === 'userData' ? path.join(os.tmpdir(), 'lobsterai-test-user-data') : os.tmpdir()),
+    isPackaged: false,
+    isReady: () => false,
+  },
+  session: {
+    defaultSession: {
+      resolveProxy: async () => 'DIRECT',
+    },
+  },
+}));
 
 import { ShareDeploymentKind, ShareDeploymentPackageManager } from '../../../shared/shareDeployment/constants';
 import { packageNodeServiceDeployment } from './nodeServiceDeploymentPackager';
@@ -287,6 +302,25 @@ describe('packageNodeServiceDeployment', () => {
       buildCommand: 'node build.js',
       port: 3000,
     })).rejects.toThrow(/start command references "server\.js"/);
+  });
+
+  test('adds a clear hint when Node package tools are missing', async () => {
+    const projectDirectory = await makeTempProject({
+      name: 'missing-npm-service',
+      scripts: {
+        start: 'node server.js',
+      },
+    });
+    await writeFile(projectDirectory, 'server.js', 'console.log("server")');
+
+    await expect(packageNodeServiceDeployment({
+      projectDirectory,
+      localServiceUrl: 'http://localhost:3000',
+      installCommand: 'sh -c "echo \\"/bin/sh: npm: command not found\\" >&2; exit 127"',
+      buildCommand: '',
+      startCommand: 'node server.js',
+      port: 3000,
+    })).rejects.toThrow(/Deployment could not find npm in the prepared Node tool environment/);
   });
 
   test('explains Next document import build failures', async () => {

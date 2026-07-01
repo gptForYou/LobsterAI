@@ -12,6 +12,7 @@ import {
   ShareDeploymentPackageManager,
   type ShareDeploymentProjectAnalysis,
 } from '../../../shared/shareDeployment/constants';
+import { getNodeToolEnv } from '../coworkUtil';
 import {
   buildNodeServiceProjectPackagePlan,
   collectNodeServiceDeploymentPackageEntries,
@@ -31,6 +32,8 @@ const STATIC_BUILD_START_COMMAND = 'node server.js';
 const STATIC_SITE_ENTRY_FILE = 'index.html';
 const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
 const NEXT_DOCUMENT_IMPORT_ERROR_PATTERN = /<Html>\s+should\s+not\s+be\s+imported\s+outside\s+of\s+pages\/_document/;
+const MISSING_NODE_TOOL_PATTERN =
+  /(?:^|\n)(?:.*?:\s*)?(node|npm|npx|pnpm|yarn)(?:\.cmd)?:\s+command not found\b/i;
 const STALE_BUILD_OUTPUT_DIRECTORY_NAMES = [
   '.next',
   '.nuxt',
@@ -127,9 +130,13 @@ function shellCommandArgs(command: string): {
   };
 }
 
-function commandEnvironment(port?: number, extraEnv?: Record<string, string>): NodeJS.ProcessEnv {
+function commandEnvironment(
+  baseEnv: NodeJS.ProcessEnv,
+  port?: number,
+  extraEnv?: Record<string, string>,
+): NodeJS.ProcessEnv {
   const portValue = String(port || 8000);
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.NODE_ENV;
   delete env.NEXT_RUNTIME;
   delete env.NEXT_PHASE;
@@ -169,8 +176,13 @@ function sanitizeCommandOutput(value: string, projectDirectory: string): string 
   return output.trim();
 }
 
-function commandFailureHint(output: string): string {
+function commandFailureHint(label: string, output: string): string {
+  const missingToolMatch = output.match(MISSING_NODE_TOOL_PATTERN);
+  if (missingToolMatch?.[1]) {
+    return `Deployment could not find ${missingToolMatch[1]} in the prepared Node tool environment.`;
+  }
   if (NEXT_DOCUMENT_IMPORT_ERROR_PATTERN.test(output)) {
+    if (label !== 'build') return '';
     return [
       'Next.js build failed: <Html> from next/document can only be used in pages/_document.',
       'Remove that import from pages/components such as pages/404, or move document markup into pages/_document.',
@@ -223,6 +235,7 @@ async function runDeploymentCommand(
   projectDirectory: string,
   command: string,
   label: string,
+  baseEnv: NodeJS.ProcessEnv,
   port?: number,
   extraEnv?: Record<string, string>,
 ): Promise<void> {
@@ -233,13 +246,13 @@ async function runDeploymentCommand(
   try {
     await execFileAsync(shell.file, shell.args, {
       cwd: projectDirectory,
-      env: commandEnvironment(port, extraEnv),
+      env: commandEnvironment(baseEnv, port, extraEnv),
       timeout: NODE_SERVICE_DEPLOYMENT_LIMITS.CommandTimeoutMs,
       maxBuffer: COMMAND_MAX_BUFFER_BYTES,
     });
   } catch (error) {
     const output = errorOutput(error, projectDirectory);
-    const hint = label === 'build' ? commandFailureHint(output) : '';
+    const hint = commandFailureHint(label, output);
     throw new Error(
       [
         `Node service deployment ${label} command failed: ${trimmed}`,
@@ -285,13 +298,14 @@ async function runProductionDependencyPrune(
   projectDirectory: string,
   packageManager: ShareDeploymentPackageManager,
   commandWarnings: string[],
+  baseEnv: NodeJS.ProcessEnv,
   port?: number,
 ): Promise<void> {
   const prune = pruneCommand(packageManager);
   if (!prune) return;
 
   try {
-    await runDeploymentCommand(projectDirectory, prune, 'production dependency pruning', port);
+    await runDeploymentCommand(projectDirectory, prune, 'production dependency pruning', baseEnv, port);
   } catch (error) {
     commandWarnings.push(error instanceof Error ? error.message : 'Production dependency pruning failed.');
   }
@@ -721,6 +735,7 @@ export async function packageNodeServiceDeployment(
     throw new Error(plan.analysis.blockers.join('\n') || 'Project cannot be deployed.');
   }
 
+  const commandEnv = await getNodeToolEnv();
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'lobster-node-build-'));
   const projectDir = path.join(tempDir, 'project');
   const commandWarnings: string[] = [];
@@ -753,11 +768,12 @@ export async function packageNodeServiceDeployment(
     if (buildCommand.trim()) {
       await removeStaleBuildOutputs(projectDir);
     }
-    await runDeploymentCommand(projectDir, installCommand, 'install', port);
+    await runDeploymentCommand(projectDir, installCommand, 'install', commandEnv, port);
     await runDeploymentCommand(
       projectDir,
       buildCommand,
       'build',
+      commandEnv,
       port,
       {
         NODE_ENV: 'production',
@@ -778,7 +794,7 @@ export async function packageNodeServiceDeployment(
       entryFile = optimizedPackage.entryFile;
       spaFallback = optimizedPackage.spaFallback;
     } else {
-      await runProductionDependencyPrune(projectDir, plan.analysis.packageManager, commandWarnings, port);
+      await runProductionDependencyPrune(projectDir, plan.analysis.packageManager, commandWarnings, commandEnv, port);
       deploymentPackage = await collectNodeServiceDeploymentPackageEntries(projectDir);
       const fallbackStartCommand = resolvePackageScriptStartCommand(packageJson, plan.analysis.packageManager);
       if (isGeneratedOptimizedStartCommand(effectiveStartCommand) && fallbackStartCommand) {
