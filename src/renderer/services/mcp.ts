@@ -138,6 +138,20 @@ class McpService {
     }
   }
 
+  async connectQichacha(): Promise<{ success: boolean; servers?: McpServerConfig[]; error?: string }> {
+    try {
+      const result = await window.electron.mcp.connectQichacha();
+      if (result.success && result.servers) {
+        this.servers = result.servers;
+      }
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to connect Qichacha MCP';
+      console.error('Failed to connect Qichacha MCP:', error);
+      return { success: false, error: message };
+    }
+  }
+
   onChanged(callback: () => void): () => void {
     return window.electron.mcp.onChanged(callback);
   }

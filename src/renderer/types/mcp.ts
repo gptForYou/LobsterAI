@@ -69,6 +69,7 @@ export interface McpRegistryEntry {
   requiredEnvKeys?: string[];    // env vars the user must fill
   optionalEnvKeys?: string[];    // optional env vars
   argPlaceholders?: string[];    // placeholder hints for args (e.g. path)
+  oauthProvider?: 'qichacha';     // special app-managed OAuth/API key flow
 }
 
 // Remote marketplace server entry

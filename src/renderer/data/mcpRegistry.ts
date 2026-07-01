@@ -160,6 +160,17 @@ export const mcpRegistry: McpRegistryEntry[] = [
     defaultArgs: ['-y', 'firecrawl-mcp@latest'],
     requiredEnvKeys: ['FIRECRAWL_API_KEY'],
   },
+  {
+    id: 'qichacha',
+    name: '企查查',
+    descriptionKey: 'mcpDesc_qichacha',
+    category: 'data-api',
+    categoryKey: 'mcpCategoryDataApi',
+    transportType: 'http',
+    command: 'https://agent.qcc.com/mcp',
+    defaultArgs: ['6 servers'],
+    oauthProvider: 'qichacha',
+  },
 ];
 
 /**

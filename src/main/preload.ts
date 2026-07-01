@@ -94,6 +94,7 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke(McpIpcChannel.SetEnabled, options),
     retryLaunchResolution: (id: string) => ipcRenderer.invoke(McpIpcChannel.RetryLaunchResolution, id),
     fetchMarketplace: () => ipcRenderer.invoke(McpIpcChannel.FetchMarketplace),
+    connectQichacha: () => ipcRenderer.invoke(McpIpcChannel.ConnectQichacha),
     onChanged: (callback: () => void) => {
       const handler = () => callback();
       ipcRenderer.on(McpIpcChannel.Changed, handler);

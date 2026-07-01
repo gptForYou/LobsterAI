@@ -38,6 +38,9 @@ const LAUNCH_STATUS_COLORS: Record<string, string> = {
 
 type McpTab = 'installed' | 'marketplace' | 'custom';
 
+const isQichachaRegistryEntry = (entry: McpRegistryEntry): boolean =>
+  entry.oauthProvider === 'qichacha';
+
 /**
  * Text with line-clamp-2 that shows a popover above the text when truncated.
  */
@@ -96,6 +99,7 @@ const McpManager: React.FC = () => {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<McpServerConfig | null>(null);
   const [installingRegistry, setInstallingRegistry] = useState<McpRegistryEntry | null>(null);
+  const [connectingRegistryId, setConnectingRegistryId] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState('all');
   const [dynamicRegistry, setDynamicRegistry] = useState<McpRegistryEntry[]>(mcpRegistry);
   const [dynamicCategories, setDynamicCategories] = useState<ReadonlyArray<{ id: string; key: string; name_zh?: string; name_en?: string }>>(mcpCategories);
@@ -124,7 +128,13 @@ const McpManager: React.FC = () => {
     const fetchMarketplace = async () => {
       const result = await mcpService.fetchMarketplace();
       if (!isActive || !result) return;
-      setDynamicRegistry(result.registry);
+      const specialLocalEntries = mcpRegistry.filter(entry => entry.oauthProvider);
+      const specialLocalIds = new Set(specialLocalEntries.map(entry => entry.id));
+      const mergedRegistry = [
+        ...result.registry.filter(entry => !specialLocalIds.has(entry.id)),
+        ...specialLocalEntries,
+      ];
+      setDynamicRegistry(mergedRegistry);
       const cats: Array<{ id: string; key: string; name_zh?: string; name_en?: string }> = [
         { id: 'all', key: 'mcpCategoryAll' },
         ...result.categories
@@ -422,6 +432,39 @@ const McpManager: React.FC = () => {
       activeCategory,
       ...getRegistryAnalyticsParams(entry),
     });
+    if (isQichachaRegistryEntry(entry)) {
+      setActionError('');
+      setConnectingRegistryId(entry.id);
+      mcpService.connectQichacha().then(result => {
+        if (!result.success) {
+          setActionError(result.error || i18nService.t('mcpQichachaConnectFailed'));
+          reportMcpAction('qichacha_connect_failed', {
+            source: 'mcp_manager',
+            activeTab,
+            activeCategory,
+            result: 'failed',
+            errorCode: 'qichacha_connect_failed',
+            ...getRegistryAnalyticsParams(entry),
+          });
+          return;
+        }
+        if (result.servers) {
+          dispatch(setMcpServers(result.servers));
+        }
+        reportMcpAction('qichacha_connect_success', {
+          source: 'mcp_manager',
+          activeTab,
+          activeCategory,
+          result: 'success',
+          ...getRegistryAnalyticsParams(entry),
+        });
+      }).catch(error => {
+        setActionError(error instanceof Error ? error.message : i18nService.t('mcpQichachaConnectFailed'));
+      }).finally(() => {
+        setConnectingRegistryId(null);
+      });
+      return;
+    }
     setEditingServer(null);
     setInstallingRegistry(entry);
     setIsFormOpen(true);
@@ -824,7 +867,20 @@ const McpManager: React.FC = () => {
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
-                      {installedRegistryIds.has(entry.id) ? (
+                      {isQichachaRegistryEntry(entry) ? (
+                        <button
+                          type="button"
+                          onClick={() => handleInstallFromRegistry(entry)}
+                          disabled={connectingRegistryId === entry.id}
+                          className="px-2.5 py-1 text-xs rounded-lg bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {connectingRegistryId === entry.id
+                            ? i18nService.t('mcpQichachaConnecting')
+                            : installedRegistryIds.has(entry.id)
+                              ? i18nService.t('mcpQichachaReconnect')
+                              : i18nService.t('mcpQichachaConnect')}
+                        </button>
+                      ) : installedRegistryIds.has(entry.id) ? (
                         <span className="px-2.5 py-1 text-xs rounded-lg bg-surface text-secondary">
                           {i18nService.t('mcpInstalled')}
                         </span>

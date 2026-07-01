@@ -492,6 +492,11 @@ interface IElectronAPI {
       data?: McpMarketplaceData;
       error?: string;
     }>;
+    connectQichacha: () => Promise<{
+      success: boolean;
+      servers?: McpServerConfigIPC[];
+      error?: string;
+    }>;
     onChanged: (callback: () => void) => () => void;
   };
   kits: {
