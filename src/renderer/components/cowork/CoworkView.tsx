@@ -38,8 +38,19 @@ import { useAgentSelectedModel } from './agentModelSelection';
 import { CoworkUiEvent } from './constants';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import CoworkSessionDetail from './CoworkSessionDetail';
+import HomeRecentTasks from './HomeRecentTasks';
 import { reportPromptTemplateAction } from './promptAnalytics';
 import { buildCoworkContinuationSystemPrompt, buildCoworkSystemPrompt } from './skillSystemPrompt';
+
+// Time-aware hero greeting: the brand mark stays as the logo, so the heading
+// can greet the user instead of repeating the product name on every visit.
+const resolveHomeGreetingKey = (date: Date = new Date()): string => {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 12) return 'coworkGreetingMorning';
+  if (hour >= 12 && hour < 18) return 'coworkGreetingAfternoon';
+  if (hour >= 18 && hour < 23) return 'coworkGreetingEvening';
+  return 'coworkGreetingLateNight';
+};
 
 const logCoworkViewModel = (message: string): void => {
   console.debug(`[CoworkView] ${message}`);
@@ -795,13 +806,13 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
               className="mt-4 text-2xl font-semibold leading-[var(--lobster-leading-2xl)] tracking-normal text-foreground animate-fade-in-up"
               style={{ animationDelay: '70ms', animationFillMode: 'both' }}
             >
-              {i18nService.t('coworkWelcome')}
+              {i18nService.t(resolveHomeGreetingKey())}
             </h2>
             <p
               className="mt-2 text-[length:var(--lobster-text-promptLarge)] font-normal leading-[var(--lobster-leading-promptLarge)] text-secondary animate-fade-in-up"
               style={{ animationDelay: '120ms', animationFillMode: 'both' }}
             >
-              {i18nService.t('coworkDescription')}
+              {i18nService.t('coworkHomeTagline')}
             </p>
           </div>
 
@@ -846,6 +857,9 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
             )}
             <CreditsResetCampaignFloat />
           </div>
+
+          {/* Recent tasks - one-click resume for returning users */}
+          <HomeRecentTasks />
           <div aria-hidden="true" className="w-full min-h-[24px] flex-[3_0_0px]" />
         </div>
       </div>

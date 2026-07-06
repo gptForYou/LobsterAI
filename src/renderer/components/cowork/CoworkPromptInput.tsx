@@ -2961,7 +2961,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
         {isLarge ? (
           useHomeContextLayout ? (
             <>
-              <div className="relative z-10 rounded-2xl border border-border bg-surface shadow-card">
+              <div className="relative z-10 rounded-2xl border border-border bg-surface shadow-card transition-[border-color,box-shadow] duration-200 focus-within:border-primary/35 focus-within:shadow-elevated">
                 {largeAttachmentPreview}
                 {selectedTextSnippetPreview}
                 {sessionGoalStatusBar}
