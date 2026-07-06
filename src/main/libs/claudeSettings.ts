@@ -10,6 +10,7 @@ import {
 } from './coworkOpenAICompatProxy';
 import { readOpenAICodexAuthFile } from './openaiCodexAuth';
 import { getOpenClawTokenProxyPort } from './openclawTokenProxy';
+import { hasXaiOAuthCredential } from './xaiAuth';
 
 type LocalProviderConfig = Omit<ProviderConfig, 'apiFormat'> & { apiFormat?: ApiFormat | 'native' };
 
@@ -228,7 +229,7 @@ type MatchedProvider = {
 };
 
 function getEffectiveProviderApiFormat(providerName: string, apiFormat: unknown): AnthropicApiFormat {
-  if (providerName === ProviderName.OpenAI || providerName === ProviderName.Gemini || providerName === ProviderName.StepFun || providerName === ProviderName.Youdaozhiyun || providerName === ProviderName.Copilot) {
+  if (providerName === ProviderName.OpenAI || providerName === ProviderName.Gemini || providerName === ProviderName.Xai || providerName === ProviderName.StepFun || providerName === ProviderName.Youdaozhiyun || providerName === ProviderName.Copilot) {
     return 'openai';
   }
   if (providerName === ProviderName.Anthropic) {
@@ -254,6 +255,15 @@ function shouldUseOpenAICodexOAuth(providerName: string, providerConfig: LocalPr
     return false;
   }
   return readOpenAICodexAuthFile() !== null;
+}
+
+/**
+ * xAI OAuth mode: the credential lives in the OpenClaw auth-profiles store
+ * (written by xaiAuth.ts) and the runtime's bundled xai plugin injects and
+ * refreshes the Bearer token, so no local API key exists in oauth mode.
+ */
+function shouldUseXaiOAuth(providerName: string, providerConfig: LocalProviderConfig): boolean {
+  return providerName === ProviderName.Xai && providerConfig.authType === 'oauth';
 }
 
 function tryLobsteraiServerFallback(modelId?: string): MatchedProvider | null {
@@ -380,6 +390,14 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
     return { matched: null, error: 'MiniMax OAuth mode selected but login not completed.' };
   }
 
+  // xAI OAuth mode guard: without a credential in the OpenClaw auth-profiles
+  // store the provider cannot serve requests yet.
+  if (shouldUseXaiOAuth(providerName, providerConfig) && !hasXaiOAuthCredential()) {
+    const serverFallback = tryLobsteraiServerFallback(modelId);
+    if (serverFallback) return { matched: serverFallback };
+    return { matched: null, error: 'xAI OAuth mode selected but login not completed.' };
+  }
+
   let apiFormat = getEffectiveProviderApiFormat(providerName, providerConfig.apiFormat);
   let baseURL = providerConfig.baseUrl?.trim();
 
@@ -399,7 +417,8 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
   const hasApiKey = providerConfig.apiKey?.trim();
   const hasOAuthCreds =
     (providerName === ProviderName.Minimax && (providerConfig as any).authType === 'oauth' && !!(providerConfig as any).oauthAccessToken?.trim())
-    || shouldUseOpenAICodexOAuth(providerName, providerConfig);
+    || shouldUseOpenAICodexOAuth(providerName, providerConfig)
+    || (shouldUseXaiOAuth(providerName, providerConfig) && hasXaiOAuthCredential());
   if (apiFormat === 'anthropic' && providerRequiresApiKey(providerName) && !providerConfig.apiKey?.trim() && !hasApiKey && !hasOAuthCreds) {
     const serverFallback = tryLobsteraiServerFallback(modelId);
     if (serverFallback) return { matched: serverFallback };
@@ -618,6 +637,10 @@ export function resolveAllProviderApiKeys(): Record<string, string> {
     if (shouldUseOpenAICodexOAuth(providerName, providerConfig)) {
       continue;
     }
+    // xAI OAuth: the Bearer comes from the OpenClaw auth-profiles store, no env key.
+    if (shouldUseXaiOAuth(providerName, providerConfig)) {
+      continue;
+    }
     // For MiniMax OAuth, inject oauthAccessToken instead of apiKey
     let apiKey = providerConfig.apiKey?.trim();
     if (providerName === ProviderName.Minimax && (providerConfig as any).authType === 'oauth') {
@@ -694,6 +717,25 @@ export function resolveAllEnabledProviderConfigs(): ProviderRawConfig[] {
 
     if (shouldUseOpenAICodexOAuth(providerName, providerConfig)) {
       const baseURL = providerConfig.baseUrl?.trim() || 'https://api.openai.com/v1';
+      const models = normalizeProviderModels(providerName, providerConfig.models);
+      if (models.length === 0) continue;
+      result.push({
+        providerName,
+        baseURL,
+        apiKey: '',
+        apiType: 'openai',
+        authType: 'oauth',
+        codingPlanEnabled: false,
+        models,
+      });
+      continue;
+    }
+
+    // xAI OAuth: declare the provider only once login has completed, so the
+    // gateway never sees an xai provider it cannot authenticate.
+    if (shouldUseXaiOAuth(providerName, providerConfig)) {
+      if (!hasXaiOAuthCredential()) continue;
+      const baseURL = providerConfig.baseUrl?.trim() || 'https://api.x.ai/v1';
       const models = normalizeProviderModels(providerName, providerConfig.models);
       if (models.length === 0) continue;
       result.push({

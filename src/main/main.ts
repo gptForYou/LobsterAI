@@ -9067,6 +9067,59 @@ if (!gotTheLock) {
     };
   });
 
+  // xAI (Grok) OAuth handlers — see src/main/libs/xaiAuth.ts.
+  // Browser PKCE against https://auth.x.ai with a loopback callback on
+  // http://127.0.0.1:56121/callback; when that fixed port is taken (e.g. an
+  // OpenClaw CLI login), falls back to the device-code flow and streams the
+  // user code to the renderer via 'xai-oauth:device-code'. The credential is
+  // written into the OpenClaw auth-profiles store, where the runtime's xai
+  // plugin injects and auto-refreshes the Bearer token.
+  ipcMain.handle('xai-oauth:start', async (event) => {
+    const xaiAuth = await import('./libs/xaiAuth');
+    try {
+      let result;
+      try {
+        result = await xaiAuth.startXaiOAuthLogin();
+      } catch (err) {
+        if (!(err instanceof xaiAuth.XaiCallbackPortBusyError)) throw err;
+        result = await xaiAuth.startXaiDeviceCodeLogin((info) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('xai-oauth:device-code', info);
+          }
+        });
+      }
+      // The xai provider entry is only emitted into openclaw.json once a
+      // credential exists — sync now so the change takes effect immediately.
+      void syncOpenClawConfig({ reason: 'xai-oauth-login' });
+      return {
+        success: true as const,
+        email: result.email ?? null,
+        flow: result.flow,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        error: error instanceof Error ? error.message : 'xAI login failed',
+      };
+    }
+  });
+
+  ipcMain.handle('xai-oauth:cancel', async () => {
+    const { cancelXaiLogin } = await import('./libs/xaiAuth');
+    cancelXaiLogin();
+  });
+
+  ipcMain.handle('xai-oauth:logout', async () => {
+    const { logoutXai } = await import('./libs/xaiAuth');
+    await logoutXai();
+    void syncOpenClawConfig({ reason: 'xai-oauth-logout' });
+  });
+
+  ipcMain.handle('xai-oauth:status', async () => {
+    const { getXaiOAuthStatus } = await import('./libs/xaiAuth');
+    return getXaiOAuthStatus();
+  });
+
   ipcMain.handle('generate-session-title', async (_event, userInput: string | null) => {
     return generateSessionTitle(userInput, t('coworkDefaultSessionTitle'));
   });

@@ -69,6 +69,7 @@ vi.mock('./openclawLocalExtensions', () => ({
   findBundledExtensionsDir: () => null,
   findThirdPartyExtensionsDir: () => null,
   hasBundledOpenClawExtension: (id: string) => id !== 'qwen-portal-auth',
+  hasRuntimeBundledOpenClawExtension: (id: string) => id === 'xai',
   resolveOpenClawExtensionPluginId: (id: string) => {
     const manifestIds: Record<string, string> = {
       'clawemail-email': 'email',
@@ -1045,6 +1046,20 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.tools.deny).not.toContain('video_generate');
   });
 
+  test('declares and allowlists the bundled xai plugin so its compat hooks load', async () => {
+    const sync = await createSync();
+
+    const result = sync.sync('xai-plugin-declared');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.plugins.entries.xai).toEqual({ enabled: true });
+    // plugins.allow is a strict allowlist once non-empty — without this entry
+    // the xai plugin never loads and grok models lose their reasoningEffort
+    // compat (xAI rejects the parameter for every model except grok-4.3).
+    expect(config.plugins.allow).toContain('xai');
+  });
+
   test('maps OpenAI OAuth mode to the ChatGPT Responses provider', async () => {
     const { AuthType, OpenClawApi, OpenClawProviderId, ProviderName } = await import('../../shared/providers');
     const { buildProviderSelection } = await import('./openclawConfigSync');
@@ -1093,6 +1108,53 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(selection.providerConfig.auth).toBe(AuthType.OAuth);
     expect(selection.providerConfig.apiKey).toBe('${LOBSTER_APIKEY_MINIMAX}');
     expect(selection.providerConfig.models[0].maxTokens).toBe(131_072);
+  });
+
+  test('maps xAI OAuth mode to the xai provider without an apiKey', async () => {
+    const { AuthType, OpenClawApi, OpenClawProviderId, ProviderName } = await import('../../shared/providers');
+    const { buildProviderSelection } = await import('./openclawConfigSync');
+
+    const selection = buildProviderSelection({
+      apiKey: '',
+      baseURL: 'https://api.x.ai/v1',
+      modelId: 'grok-4.3',
+      apiType: 'openai',
+      providerName: ProviderName.Xai,
+      authType: 'oauth',
+      codingPlanEnabled: false,
+      supportsImage: true,
+      supportsThinking: true,
+      modelName: 'Grok 4.3',
+    });
+
+    expect(selection.providerId).toBe(OpenClawProviderId.Xai);
+    expect(selection.primaryModel).toBe(`${OpenClawProviderId.Xai}/grok-4.3`);
+    expect(selection.providerConfig.baseUrl).toBe('https://api.x.ai/v1');
+    expect(selection.providerConfig.api).toBe(OpenClawApi.OpenAIResponses);
+    expect(selection.providerConfig.auth).toBe(AuthType.OAuth);
+    expect(selection.providerConfig).not.toHaveProperty('apiKey');
+  });
+
+  test('keeps xAI API key mode on the env-var placeholder', async () => {
+    const { AuthType, OpenClawApi, OpenClawProviderId, ProviderName } = await import('../../shared/providers');
+    const { buildProviderSelection } = await import('./openclawConfigSync');
+
+    const selection = buildProviderSelection({
+      apiKey: 'xai-key',
+      baseURL: 'https://api.x.ai/v1',
+      modelId: 'grok-4.3',
+      apiType: 'openai',
+      providerName: ProviderName.Xai,
+      authType: 'apikey',
+      codingPlanEnabled: false,
+      supportsImage: true,
+      modelName: 'Grok 4.3',
+    });
+
+    expect(selection.providerId).toBe(OpenClawProviderId.Xai);
+    expect(selection.providerConfig.api).toBe(OpenClawApi.OpenAIResponses);
+    expect(selection.providerConfig.auth).toBe(AuthType.ApiKey);
+    expect(selection.providerConfig.apiKey).toBe('${LOBSTER_APIKEY_XAI}');
   });
 
   test('keeps MiniMax API key mode on the standard MiniMax provider', async () => {

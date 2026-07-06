@@ -1696,6 +1696,28 @@ interface IElectronAPI {
       | { loggedIn: false }
     >;
   };
+  xaiOAuth: {
+    start: () => Promise<
+      | { success: true; email: string | null; flow: 'browser' | 'device-code' }
+      | { success: false; error: string }
+    >;
+    cancel: () => Promise<void>;
+    logout: () => Promise<void>;
+    status: () => Promise<{
+      loggedIn: boolean;
+      email?: string;
+      displayName?: string;
+      expiresAt?: number;
+    }>;
+    onDeviceCode: (
+      callback: (info: {
+        userCode: string;
+        verificationUri: string;
+        verificationUriComplete?: string;
+        expiresInMs: number;
+      }) => void,
+    ) => () => void;
+  };
 }
 
 // IM Gateway types
