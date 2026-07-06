@@ -1397,6 +1397,20 @@ const Settings: React.FC<SettingsProps> = ({
     { loggedIn: false } | { loggedIn: true; email?: string } | null
   >(null);
 
+  // xAI (Grok) OAuth state
+  type XaiOAuthPhase =
+    | { kind: 'idle' }
+    | { kind: 'pending' }
+    | { kind: 'device_code'; userCode: string; verificationUri: string }
+    | { kind: 'success'; email?: string }
+    | { kind: 'error'; message: string };
+  const [xaiOAuthPhase, setXaiOAuthPhase] = useState<XaiOAuthPhase>({ kind: 'idle' });
+  // Mirrors the OpenClaw auth-profiles store on disk; refreshed whenever the
+  // xAI provider tab becomes active and after login/logout. `null` = not yet checked.
+  const [xaiOAuthStatus, setXaiOAuthStatus] = useState<
+    { loggedIn: false } | { loggedIn: true; email?: string } | null
+  >(null);
+
   // Add state for providers configuration
   const [providers, setProviders] = useState<ProvidersConfig>(() => getDefaultProviders());
 
@@ -1405,7 +1419,9 @@ const Settings: React.FC<SettingsProps> = ({
   const minimaxIsOAuthMode = providers.minimax.authType !== 'apikey';
   // OpenAI defaults to API key mode unless the user explicitly opts in to OAuth
   const openaiIsOAuthMode = providers.openai.authType === 'oauth';
-  const isBaseUrlLocked = (activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled) || (activeProvider === 'qwen' && providers.qwen.codingPlanEnabled) || (activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled) || (activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled) || (activeProvider === 'qianfan' && providers.qianfan.codingPlanEnabled) || (activeProvider === 'xiaomi' && providers.xiaomi.codingPlanEnabled) || (activeProvider === 'minimax' && minimaxIsOAuthMode) || (activeProvider === 'openai' && openaiIsOAuthMode);
+  // xAI likewise defaults to API key mode; OAuth is an explicit opt-in
+  const xaiIsOAuthMode = providers.xai.authType === 'oauth';
+  const isBaseUrlLocked = (activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled) || (activeProvider === 'qwen' && providers.qwen.codingPlanEnabled) || (activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled) || (activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled) || (activeProvider === 'qianfan' && providers.qianfan.codingPlanEnabled) || (activeProvider === 'xiaomi' && providers.xiaomi.codingPlanEnabled) || (activeProvider === 'minimax' && minimaxIsOAuthMode) || (activeProvider === 'openai' && openaiIsOAuthMode) || (activeProvider === 'xai' && xaiIsOAuthMode);
 
   // 创建引用来确保内容区域的滚动
   const contentRef = useRef<HTMLDivElement>(null);
@@ -2455,9 +2471,9 @@ const Settings: React.FC<SettingsProps> = ({
     return () => { cancelled = true; };
   }, [activeProvider]);
 
-  const persistOpenAIProvidersConfigInBackground = useCallback((nextProviders: ProvidersConfig) => {
+  const persistProviderAuthConfigInBackground = useCallback((nextProviders: ProvidersConfig) => {
     void configService.updateConfig({ providers: nextProviders }).catch((saveError) => {
-      console.error('[Settings] failed to save OpenAI OAuth provider state:', saveError);
+      console.error('[Settings] failed to save provider auth state:', saveError);
       setError(i18nService.t('failedToSaveSettings'));
     });
   }, []);
@@ -2481,7 +2497,7 @@ const Settings: React.FC<SettingsProps> = ({
       setProviders(nextProviders);
       setOpenaiOAuthStatus({ loggedIn: true, email: result.email ?? undefined });
       setOpenaiOAuthPhase({ kind: 'success', email: result.email ?? undefined });
-      persistOpenAIProvidersConfigInBackground(nextProviders);
+      persistProviderAuthConfigInBackground(nextProviders);
       setTimeout(() => setOpenaiOAuthPhase({ kind: 'idle' }), 1500);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2513,11 +2529,105 @@ const Settings: React.FC<SettingsProps> = ({
     setProviders(nextProviders);
     setOpenaiOAuthStatus({ loggedIn: false });
     setOpenaiOAuthPhase({ kind: 'idle' });
-    persistOpenAIProvidersConfigInBackground(nextProviders);
+    persistProviderAuthConfigInBackground(nextProviders);
     try {
       await window.electron.openaiCodexOAuth.logout();
     } catch {
       /* ignore — file may already be gone */
+    }
+  };
+
+  // Sync the persisted xAI login state (OpenClaw auth-profiles store) into
+  // local UI state whenever the xAI provider tab becomes active. Also
+  // reconciles stale providers config (e.g. credential removed externally).
+  useEffect(() => {
+    let cancelled = false;
+    if (activeProvider !== 'xai') return;
+    void window.electron.xaiOAuth.status().then((status) => {
+      if (cancelled) return;
+      if (status.loggedIn) {
+        setXaiOAuthStatus({ loggedIn: true, email: status.email });
+      } else {
+        setXaiOAuthStatus({ loggedIn: false });
+        setProviders(prev => {
+          if (prev.xai.authType !== 'oauth') return prev;
+          return { ...prev, xai: { ...prev.xai, authType: 'apikey' } };
+        });
+      }
+    }).catch(() => {
+      if (!cancelled) setXaiOAuthStatus({ loggedIn: false });
+    });
+    return () => { cancelled = true; };
+  }, [activeProvider]);
+
+  const handleXaiOAuthLogin = async () => {
+    setXaiOAuthPhase({ kind: 'pending' });
+    // The main process falls back to the device-code flow when the loopback
+    // callback port is taken — surface the user code as soon as it arrives.
+    const unsubscribeDeviceCode = window.electron.xaiOAuth.onDeviceCode((info) => {
+      setXaiOAuthPhase({
+        kind: 'device_code',
+        userCode: info.userCode,
+        verificationUri: info.verificationUriComplete ?? info.verificationUri,
+      });
+    });
+    try {
+      const result = await window.electron.xaiOAuth.start();
+      if (!result.success) {
+        if (/cancelled/i.test(result.error)) {
+          setXaiOAuthPhase({ kind: 'idle' });
+        } else {
+          setXaiOAuthPhase({ kind: 'error', message: result.error });
+        }
+        return;
+      }
+      const nextProviders: ProvidersConfig = {
+        ...providers,
+        xai: {
+          ...providers.xai,
+          enabled: true,
+          authType: 'oauth',
+        },
+      };
+      setProviders(nextProviders);
+      setXaiOAuthStatus({ loggedIn: true, email: result.email ?? undefined });
+      setXaiOAuthPhase({ kind: 'success', email: result.email ?? undefined });
+      persistProviderAuthConfigInBackground(nextProviders);
+      setTimeout(() => setXaiOAuthPhase({ kind: 'idle' }), 1500);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setXaiOAuthPhase({ kind: 'error', message });
+    } finally {
+      unsubscribeDeviceCode();
+    }
+  };
+
+  const handleCancelXaiOAuthLogin = async () => {
+    try {
+      await window.electron.xaiOAuth.cancel();
+    } catch {
+      /* ignore — we still want to reset the UI */
+    }
+    setXaiOAuthPhase({ kind: 'idle' });
+  };
+
+  const handleXaiOAuthLogout = async () => {
+    const nextProviders: ProvidersConfig = {
+      ...providers,
+      xai: {
+        ...providers.xai,
+        enabled: providers.xai.apiKey.trim().length > 0,
+        authType: 'apikey' as const,
+      },
+    };
+    setProviders(nextProviders);
+    setXaiOAuthStatus({ loggedIn: false });
+    setXaiOAuthPhase({ kind: 'idle' });
+    persistProviderAuthConfigInBackground(nextProviders);
+    try {
+      await window.electron.xaiOAuth.logout();
+    } catch {
+      /* ignore — credential may already be gone */
     }
   };
 
@@ -4860,6 +4970,10 @@ const Settings: React.FC<SettingsProps> = ({
             openaiOAuthPhase={openaiOAuthPhase}
             setOpenaiOAuthPhase={setOpenaiOAuthPhase}
             openaiOAuthStatus={openaiOAuthStatus}
+            xaiIsOAuthMode={xaiIsOAuthMode}
+            xaiOAuthPhase={xaiOAuthPhase}
+            setXaiOAuthPhase={setXaiOAuthPhase}
+            xaiOAuthStatus={xaiOAuthStatus}
             copilotAuthStatus={copilotAuthStatus}
             copilotUserCode={copilotUserCode}
             copilotVerificationUri={copilotVerificationUri}
@@ -4888,6 +5002,9 @@ const Settings: React.FC<SettingsProps> = ({
             handleOpenAIOAuthLogin={handleOpenAIOAuthLogin}
             handleCancelOpenAIOAuthLogin={handleCancelOpenAIOAuthLogin}
             handleOpenAIOAuthLogout={handleOpenAIOAuthLogout}
+            handleXaiOAuthLogin={handleXaiOAuthLogin}
+            handleCancelXaiOAuthLogin={handleCancelXaiOAuthLogin}
+            handleXaiOAuthLogout={handleXaiOAuthLogout}
             handleCopilotSignIn={handleCopilotSignIn}
             handleCopilotSignOut={handleCopilotSignOut}
             handleCopilotCancelAuth={handleCopilotCancelAuth}

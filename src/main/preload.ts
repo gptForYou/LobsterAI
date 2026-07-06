@@ -1111,4 +1111,40 @@ contextBridge.exposeInMainWorld('electron', {
         | { loggedIn: false }
       >,
   },
+  xaiOAuth: {
+    start: () =>
+      ipcRenderer.invoke('xai-oauth:start') as Promise<
+        | { success: true; email: string | null; flow: 'browser' | 'device-code' }
+        | { success: false; error: string }
+      >,
+    cancel: () => ipcRenderer.invoke('xai-oauth:cancel') as Promise<void>,
+    logout: () => ipcRenderer.invoke('xai-oauth:logout') as Promise<void>,
+    status: () =>
+      ipcRenderer.invoke('xai-oauth:status') as Promise<{
+        loggedIn: boolean;
+        email?: string;
+        displayName?: string;
+        expiresAt?: number;
+      }>,
+    onDeviceCode: (
+      callback: (info: {
+        userCode: string;
+        verificationUri: string;
+        verificationUriComplete?: string;
+        expiresInMs: number;
+      }) => void,
+    ) => {
+      const handler = (
+        _event: unknown,
+        info: {
+          userCode: string;
+          verificationUri: string;
+          verificationUriComplete?: string;
+          expiresInMs: number;
+        },
+      ) => callback(info);
+      ipcRenderer.on('xai-oauth:device-code', handler);
+      return () => ipcRenderer.removeListener('xai-oauth:device-code', handler);
+    },
+  },
 });

@@ -56,7 +56,7 @@ const gwDiagTs = (): string => {
   const abs = Math.abs(tz);
   return `[GW-RESTART-DIAG] ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`;
 };
-import { findBundledExtensionsDir, findThirdPartyExtensionsDir, hasBundledOpenClawExtension, resolveOpenClawExtensionPluginId } from './openclawLocalExtensions';
+import { findBundledExtensionsDir, findThirdPartyExtensionsDir, hasBundledOpenClawExtension, hasRuntimeBundledOpenClawExtension, resolveOpenClawExtensionPluginId } from './openclawLocalExtensions';
 import { getOpenClawTokenProxyPort } from './openclawTokenProxy';
 import { isSystemProxyEnabled } from './systemProxy';
 
@@ -553,6 +553,7 @@ const ANTHROPIC_EXPLICIT_CONTEXT_CACHE_PARAMS: OpenClawAgentModelDefault = {
 };
 
 const OPENAI_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
+const XAI_BASE_URL = 'https://api.x.ai/v1';
 
 const normalizeBaseUrlPath = (rawBaseUrl: string, pathName: string): string => {
   const trimmed = rawBaseUrl.trim();
@@ -754,6 +755,25 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
     },
   },
 
+  [ProviderName.Xai]: {
+    providerId: OpenClawProviderId.Xai,
+    // The bundled xai extension expects the Responses API; it also unlocks
+    // Grok server-side tools (x-search etc.) that openai-completions lacks.
+    resolveApi: () => OpenClawApiConst.OpenAIResponses as OpenClawProviderApi,
+    normalizeBaseUrl: stripChatCompletionsSuffix,
+  },
+
+  // xAI OAuth (SuperGrok / X Premium entitlement): the credential lives in the
+  // OpenClaw auth-profiles store (written by xaiAuth.ts); the bundled xai
+  // plugin injects the Bearer token and auto-refreshes it, so no API key is
+  // emitted into the provider config.
+  [`${ProviderName.Xai}:oauth`]: {
+    providerId: OpenClawProviderId.Xai,
+    resolveApi: () => OpenClawApiConst.OpenAIResponses as OpenClawProviderApi,
+    normalizeBaseUrl: () => XAI_BASE_URL,
+    resolveApiKey: () => undefined,
+  },
+
   [ProviderName.Anthropic]: {
     providerId: OpenClawProviderId.Anthropic,
     resolveApi: () => OpenClawApiConst.AnthropicMessages as OpenClawProviderApi,
@@ -878,6 +898,9 @@ const resolveDescriptor = (
   if (providerName === ProviderName.Minimax && authType === 'oauth') {
     return PROVIDER_REGISTRY[`${ProviderName.Minimax}:oauth`];
   }
+  if (providerName === ProviderName.Xai && authType === 'oauth') {
+    return PROVIDER_REGISTRY[`${ProviderName.Xai}:oauth`];
+  }
   if (codingPlanEnabled) {
     const compositeKey = `${providerName}:codingPlan`;
     if (compositeKey in PROVIDER_REGISTRY) {
@@ -941,7 +964,11 @@ export const buildProviderSelection = (options: {
   );
   const modelInput: string[] = supportsImage ? ['text', 'image'] : ['text'];
   const auth = (
-    (options.providerName === ProviderName.Minimax || options.providerName === ProviderName.OpenAI)
+    (
+      options.providerName === ProviderName.Minimax
+      || options.providerName === ProviderName.OpenAI
+      || options.providerName === ProviderName.Xai
+    )
     && options.authType === 'oauth'
   )
     ? AuthType.OAuth
@@ -1676,6 +1703,11 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
     );
     const hasAskUserPlugin = isBundledPluginAvailable('ask-user-question');
     const hasMediaGenPlugin = isBundledPluginAvailable('lobster-media-generation');
+    // Runtime-bundled xai extension (dist/extensions/xai): provides the Grok
+    // model compat hooks (e.g. only grok-4.3 accepts reasoningEffort) plus the
+    // OAuth refresh hook for credentials in the auth-profiles store. Declare
+    // it only when the runtime actually bundles it (older runtimes pruned it).
+    const hasXaiPlugin = hasRuntimeBundledOpenClawExtension('xai');
     const qwenPortalAuthPluginId = resolveOpenClawExtensionPluginId('qwen-portal-auth');
 
     // Detect if any provider uses Qwen/Aliyun DashScope URLs — OpenClaw auto-injects
@@ -1907,6 +1939,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
           // Qwen/DashScope URLs. Declare it only when the plugin actually
           // exists, otherwise it becomes a stale entry on every startup.
           ...(hasQwenProvider && qwenPortalAuthPluginId ? { [qwenPortalAuthPluginId]: { enabled: true } } : {}),
+          ...(hasXaiPlugin ? { xai: { enabled: true } } : {}),
           // User-installed plugins: merge enabled state and config from user_plugins table
           ...Object.fromEntries(
             userPlugins.map(p => [p.pluginId, {
@@ -1926,6 +1959,11 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
         const trustedPluginAllow = Array.from(new Set([
           ...existingAllow,
           BUNDLED_BROWSER_PLUGIN_ID,
+          // A non-empty plugins.allow is a strict allowlist in OpenClaw
+          // (manifest-owner-policy "not-in-allowlist"), so runtime-bundled
+          // plugins we rely on must be listed here explicitly or they never
+          // load — entries.enabled alone is not enough.
+          ...(hasXaiPlugin ? ['xai'] : []),
           ...preinstalledPlugins.map(plugin => plugin.pluginId),
           ...userPlugins.filter(plugin => plugin.enabled).map(plugin => plugin.pluginId),
         ])).sort();

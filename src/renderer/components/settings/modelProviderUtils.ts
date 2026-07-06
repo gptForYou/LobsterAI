@@ -53,6 +53,13 @@ export const hasProviderAuthConfigured = (provider: ProviderType, config: Provid
     return true;
   }
 
+  // xAI OAuth: the credential lives in the OpenClaw auth-profiles store, not
+  // in the renderer config. Settings reconciles authType back to apikey when
+  // no credential exists (same pattern as OpenAI ChatGPT OAuth).
+  if (provider === ProviderName.Xai && config.authType === ProviderAuthType.OAuth) {
+    return true;
+  }
+
   if (provider === ProviderName.Copilot) {
     return config.authType === ProviderAuthType.OAuth;
   }
@@ -70,7 +77,7 @@ export const getFixedApiFormatForProvider = (provider: string): 'anthropic' | 'o
   if (provider === 'openai' || provider === 'stepfun') {
     return 'openai';
   }
-  if (provider === ProviderName.Youdaozhiyun || provider === ProviderName.Copilot || provider === ProviderName.Qianfan) {
+  if (provider === ProviderName.Youdaozhiyun || provider === ProviderName.Copilot || provider === ProviderName.Qianfan || provider === ProviderName.Xai) {
     return 'openai';
   }
   if (provider === 'moonshot') {

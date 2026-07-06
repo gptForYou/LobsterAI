@@ -25,6 +25,7 @@
 export const ProviderName = {
   OpenAI: 'openai',
   Gemini: 'gemini',
+  Xai: 'xai',
   Anthropic: 'anthropic',
   DeepSeek: 'deepseek',
   Moonshot: 'moonshot',
@@ -51,6 +52,7 @@ export const OpenClawProviderId = {
   LobsteraiServer: 'lobsterai-server',
   Moonshot: 'moonshot',
   Google: 'google',
+  Xai: 'xai',
   Anthropic: 'anthropic',
   OpenAI: 'openai',
   OpenAICodex: 'openai-codex',
@@ -504,6 +506,25 @@ const PROVIDER_DEFINITIONS = [
       { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', supportsImage: true, supportsThinking: true },
       { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', supportsImage: true, supportsThinking: true },
       { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', supportsImage: true, supportsThinking: true },
+    ],
+  },
+  {
+    id: ProviderName.Xai,
+    label: 'xAI (Grok)',
+    website: 'https://console.x.ai',
+    apiKeyUrl: 'https://console.x.ai',
+    openClawProviderId: OpenClawProviderId.Xai,
+    defaultBaseUrl: 'https://api.x.ai/v1',
+    defaultApiFormat: ApiFormat.OpenAI,
+    codingPlanSupported: false,
+    region: 'global',
+    enPriority: 4,
+    // Model IDs must stay within the pinned OpenClaw xai extension's selectable
+    // catalog (extensions/xai/model-definitions.ts); retired IDs are pruned by
+    // the runtime on config sync.
+    defaultModels: [
+      { id: 'grok-4.3', name: 'Grok 4.3', supportsImage: true, supportsThinking: true, contextWindow: 1_000_000 },
+      { id: 'grok-build-0.1', name: 'Grok Build 0.1', supportsImage: true, supportsThinking: true, contextWindow: 256_000 },
     ],
   },
   {
