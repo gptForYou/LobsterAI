@@ -252,6 +252,7 @@ export interface OpenClawGatewayRepairResult {
 export interface CoworkUserMemoryEntry {
   id: string;
   text: string;
+  section?: string;
 }
 
 export interface CoworkMemoryStats {

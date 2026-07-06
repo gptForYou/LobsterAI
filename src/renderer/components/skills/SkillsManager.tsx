@@ -17,9 +17,9 @@ import { setSkills } from '../../store/slices/skillSlice';
 import { MarketplaceSkill, MarketTag,Skill } from '../../types/skill';
 import Modal from '../common/Modal';
 import ErrorMessage from '../ErrorMessage';
+import EditIcon from '../icons/EditIcon';
 import FolderOpenIcon from '../icons/FolderOpenIcon';
 import LinkIcon from '../icons/LinkIcon';
-import PencilSquareIcon from '../icons/PencilSquareIcon';
 import PlusCircleIcon from '../icons/PlusCircleIcon';
 import SearchIcon from '../icons/SearchIcon';
 import SkillIcon from '../icons/SkillIcon';
@@ -835,7 +835,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       )}
 
       {/* Sticky toolbar: Description + Search + Tabs + Tag pills */}
-      <div className="sticky top-0 z-10 bg-claude-bg dark:bg-claude-darkBg pb-4 space-y-4 shadow-sm">
+      <div className="sticky top-0 z-10 space-y-4 bg-background pb-4">
         {/* Search + Add button */}
         <div className="flex items-center gap-3">
         <div className="relative flex-1">
@@ -929,7 +929,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 onClick={handleCreateByChat}
                 className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-foreground hover:bg-surface-raised transition-colors"
               >
-                <PencilSquareIcon className="h-4 w-4 text-secondary" />
+                <EditIcon className="h-4 w-4 text-secondary" />
                 <span>{i18nService.t('createSkillByChat')}</span>
               </button>
               {ENABLE_OPENCLAW_SKILL_SYNC && (
@@ -959,19 +959,19 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
               });
               setActiveTab('installed');
             }}
-            className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+            className={`relative px-2.5 pb-2.5 pt-0.5 text-[13px] font-semibold transition-colors ${
               activeTab === 'installed'
                 ? 'text-foreground'
-                : 'text-secondary hover:hover:text-foreground'
+                : 'text-secondary hover:text-foreground'
             }`}
           >
             {i18nService.t('skillInstalled')}
             {skills.length > 0 && (
-              <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-surface-raised">
+              <span className="ml-1.5 rounded-full bg-surface-raised px-1.5 py-0.5 text-[10px] font-medium text-secondary">
                 {skills.length}
               </span>
             )}
-            <div className={`absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-colors ${
+            <div className={`absolute bottom-[-1px] left-0 right-0 h-0.5 rounded-full transition-colors ${
               activeTab === 'installed' ? 'bg-primary' : 'bg-transparent'
             }`} />
           </button>
@@ -985,14 +985,14 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
               });
               setActiveTab('marketplace');
             }}
-            className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+            className={`relative px-2.5 pb-2.5 pt-0.5 text-[13px] font-semibold transition-colors ${
               activeTab === 'marketplace'
                 ? 'text-foreground'
-                : 'text-secondary hover:hover:text-foreground'
+                : 'text-secondary hover:text-foreground'
             }`}
           >
             {i18nService.t('skillMarketplace')}
-            <div className={`absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-colors ${
+            <div className={`absolute bottom-[-1px] left-0 right-0 h-0.5 rounded-full transition-colors ${
               activeTab === 'marketplace' ? 'bg-primary' : 'bg-transparent'
             }`} />
           </button>
@@ -1026,10 +1026,10 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 });
                 setActiveMarketTag('all');
               }}
-              className={`px-2.5 py-1 text-xs rounded-lg transition-colors ${
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                 activeMarketTag === 'all'
                   ? 'bg-primary text-white'
-                  : 'bg-surface text-secondary hover:bg-surface-raised border border-border'
+                  : 'bg-surface-raised text-secondary hover:text-foreground'
               }`}
             >
               {i18nService.t('skillCategoryAll')}
@@ -1048,10 +1048,10 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                   });
                   setActiveMarketTag(tag.id);
                 }}
-                className={`px-2.5 py-1 text-xs rounded-lg transition-colors ${
+                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                   activeMarketTag === tag.id
                     ? 'bg-primary text-white'
-                    : 'bg-surface text-secondary hover:bg-surface-raised border border-border'
+                    : 'bg-surface-raised text-secondary hover:text-foreground'
                 }`}
               >
                 {resolveLocalizedText(tag)}
@@ -1064,33 +1064,44 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
       <div>
       {activeTab === 'installed' && (
       <>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
         {filteredSkills.length === 0 ? (
-          <div className="col-span-2 text-center py-8 text-sm text-secondary">
+          <div className="col-span-full text-center py-8 text-sm text-secondary">
             {i18nService.t('noSkillsAvailable')}
           </div>
         ) : (
-          filteredSkills.map((skill) => (
+          filteredSkills.map((skill) => {
+            const openInstalledDetail = () => {
+              reportSkillAction('open_installed_detail', {
+                source: 'skills_manager',
+                activeTab,
+                resultCount: filteredSkills.length,
+                ...getInstalledSkillAnalyticsParams(
+                  skill,
+                  marketplaceSkills.find(item => item.id === skill.id),
+                ),
+              });
+              setSelectedSkill(skill);
+            };
+            return (
             <div
               key={skill.id}
-              className="rounded-xl border border-border bg-surface p-3 transition-colors hover:border-primary hover:bg-surface-raised cursor-pointer"
-              onClick={() => {
-                reportSkillAction('open_installed_detail', {
-                  source: 'skills_manager',
-                  activeTab,
-                  resultCount: filteredSkills.length,
-                  ...getInstalledSkillAnalyticsParams(
-                    skill,
-                    marketplaceSkills.find(item => item.id === skill.id),
-                  ),
-                });
-                setSelectedSkill(skill);
+              role="button"
+              tabIndex={0}
+              className="flex flex-col cursor-pointer rounded-xl border border-border bg-surface p-3 shadow-subtle transition-all hover:border-primary/50 hover:shadow-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              onClick={openInstalledDetail}
+              onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  openInstalledDetail();
+                }
               }}
             >
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-7 h-7 rounded-lg bg-surface flex items-center justify-center flex-shrink-0">
-                    <SkillIcon className="h-4 w-4 text-secondary" />
+                  <div className="w-7 h-7 rounded-lg bg-primary-muted flex items-center justify-center flex-shrink-0">
+                    <SkillIcon className="h-4 w-4 text-primary" />
                   </div>
                   <span className="text-sm font-medium text-foreground truncate">
                     {skill.name}
@@ -1128,7 +1139,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 {skillService.getLocalizedSkillDescription(skill.id, skill.name, skill.description)}
               </p>
 
-              <div className="flex items-center justify-between text-[10px] text-secondary">
+              <div className="mt-auto flex items-center justify-between text-[11px] text-secondary">
                 <div className="flex items-center gap-2">
                 {skill.isOfficial && (
                   <>
@@ -1167,7 +1178,8 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 })()}
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
       </>
@@ -1175,8 +1187,23 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
 
       {activeTab === 'marketplace' && (
         isLoadingMarketplace ? (
-          <div className="text-center py-12 text-sm text-secondary">
-            {i18nService.t('downloadingSkill')}
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3" aria-hidden="true">
+            {Array.from({ length: 6 }).map((_, idx) => (
+              <div key={idx} className="animate-pulse rounded-xl border border-border bg-surface p-3">
+                <div className="mb-3 flex items-center gap-2">
+                  <div className="h-7 w-7 rounded-lg bg-surface-raised" />
+                  <div className="h-3.5 w-1/3 rounded bg-surface-raised" />
+                </div>
+                <div className="space-y-2">
+                  <div className="h-3 w-full rounded bg-surface-raised" />
+                  <div className="h-3 w-2/3 rounded bg-surface-raised" />
+                </div>
+                <div className="mt-3 flex items-center gap-1.5">
+                  <div className="h-4 w-12 rounded bg-surface-raised" />
+                  <div className="h-4 w-10 rounded bg-surface-raised" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <>
@@ -1185,29 +1212,40 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                 {i18nService.t('skillMarketplaceEmpty')}
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
-                {filteredMarketplaceSkills.map((skill) => (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
+                {filteredMarketplaceSkills.map((skill) => {
+                  const openMarketplaceDetail = () => {
+                    reportSkillAction('open_marketplace_detail', {
+                      source: 'skills_manager',
+                      activeTab,
+                      activeMarketTag,
+                      resultCount: filteredMarketplaceSkills.length,
+                      ...getMarketplaceSkillAnalyticsParams(
+                        skill,
+                        skills.find(item => item.id === skill.id),
+                      ),
+                    });
+                    setSelectedMarketplaceSkill(skill);
+                  };
+                  return (
               <div
                 key={skill.id}
-                className="rounded-xl border border-border bg-surface p-3 transition-colors hover:border-primary hover:bg-surface-raised cursor-pointer"
-                onClick={() => {
-                  reportSkillAction('open_marketplace_detail', {
-                    source: 'skills_manager',
-                    activeTab,
-                    activeMarketTag,
-                    resultCount: filteredMarketplaceSkills.length,
-                    ...getMarketplaceSkillAnalyticsParams(
-                      skill,
-                      skills.find(item => item.id === skill.id),
-                    ),
-                  });
-                  setSelectedMarketplaceSkill(skill);
+                role="button"
+                tabIndex={0}
+                className="flex flex-col cursor-pointer rounded-xl border border-border bg-surface p-3 shadow-subtle transition-all hover:border-primary/50 hover:shadow-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                onClick={openMarketplaceDetail}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openMarketplaceDetail();
+                  }
                 }}
               >
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-7 h-7 rounded-lg bg-surface flex items-center justify-center flex-shrink-0">
-                      <SkillIcon className="h-4 w-4 text-secondary" />
+                    <div className="w-7 h-7 rounded-lg bg-primary-muted flex items-center justify-center flex-shrink-0">
+                      <SkillIcon className="h-4 w-4 text-primary" />
                     </div>
                     <span className="text-sm font-medium text-foreground truncate">
                       {skill.name}
@@ -1256,7 +1294,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                   {resolveLocalizedText(skill.description)}
                 </p>
 
-                <div className="flex items-center gap-2 text-[10px] text-secondary">
+                <div className="mt-auto flex items-center gap-2 text-[11px] text-secondary">
                   {skill.source?.from && (
                     <>
                       <span className="px-1.5 py-0.5 rounded bg-surface-raised font-medium">
@@ -1286,7 +1324,8 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly, onCreateByChat 
                   )}
                 </div>
               </div>
-            ))}
+                  );
+                })}
           </div>
             )}
           </>
