@@ -152,6 +152,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [isResizing, setIsResizing] = useState(false);
   const [agentScrollEdges, setAgentScrollEdges] = useState({ top: false, bottom: false });
+  const [isSidebarBannerVisible, setIsSidebarBannerVisible] = useState(false);
   const [showKitsNewBadge, setShowKitsNewBadge] = useState(false);
   const isResizingRef = useRef(false);
   const resizeStartXRef = useRef(0);
@@ -622,7 +623,9 @@ const Sidebar: React.FC<SidebarProps> = ({
       <div className="relative min-h-0 flex-1">
         <div
           ref={agentScrollContainerRef}
-          className="scrollbar-hidden h-full overflow-y-auto px-2.5 pb-10"
+          className={`scrollbar-hidden h-full overflow-y-auto px-2.5 ${
+            isSidebarBannerVisible && !isBatchMode ? 'pb-[104px]' : 'pb-10'
+          }`}
           onScroll={handleAgentScroll}
         >
           <MyAgentSidebarTree
@@ -652,6 +655,9 @@ const Sidebar: React.FC<SidebarProps> = ({
             onBatchSelectableItemsChange={handleBatchSelectableItemsChange}
           />
         </div>
+        {!isBatchMode && (
+          <SidebarAdBanner onVisibleChange={setIsSidebarBannerVisible} />
+        )}
         <div
           className={`pointer-events-none absolute inset-x-0 top-0 z-10 h-24 bg-gradient-to-b from-surface-raised to-transparent transition-opacity duration-150 ${
             agentScrollEdges.top ? 'opacity-100' : 'opacity-0'
@@ -660,11 +666,6 @@ const Sidebar: React.FC<SidebarProps> = ({
         <div
           className={`pointer-events-none absolute inset-x-0 top-[68px] z-10 h-3 bg-gradient-to-b from-surface-raised to-transparent transition-opacity duration-150 ${
             agentScrollEdges.top ? 'opacity-40' : 'opacity-0'
-          }`}
-        />
-        <div
-          className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 h-3 bg-gradient-to-t from-surface-raised to-transparent transition-opacity duration-150 ${
-            agentScrollEdges.bottom ? 'opacity-40' : 'opacity-0'
           }`}
         />
       </div>
@@ -726,7 +727,6 @@ const Sidebar: React.FC<SidebarProps> = ({
         </div>
       ) : (
         <div className="pb-2 pt-2">
-          <SidebarAdBanner />
           <div className="flex items-center gap-1 pl-3 pr-2 pt-1">
             {!hideLogin && (
               <div className="flex-1 min-w-0">
