@@ -1,4 +1,4 @@
-import { ArchiveBoxIcon, ArrowPathIcon, ArrowPathRoundedSquareIcon, ChatBubbleLeftIcon, CheckCircleIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, ExclamationTriangleIcon, GlobeAltIcon, InformationCircleIcon, MagnifyingGlassIcon, SunIcon, TrashIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { ArchiveBoxIcon, ArrowPathIcon, ArrowPathRoundedSquareIcon, ChatBubbleLeftIcon, CheckCircleIcon, CpuChipIcon, CubeIcon, EnvelopeIcon, ExclamationTriangleIcon, GlobeAltIcon, InformationCircleIcon, MagnifyingGlassIcon, SignalIcon, SunIcon, TrashIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import React, { useCallback,useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
@@ -4704,14 +4704,34 @@ const Settings: React.FC<SettingsProps> = ({
                   </h4>
 
                   <div className="rounded-xl border border-border bg-surface p-4">
-                    <SettingsToggleRow
-                      title={i18nService.t('openClawHeartbeatEnabled')}
-                      description={i18nService.t('openClawHeartbeatEnabledDescription')}
-                      checked={openClawHeartbeatEnabled}
-                      onToggle={() => {
-                        setOpenClawHeartbeatEnabled((prev) => !prev);
-                      }}
-                    />
+                    <div className="flex items-start gap-3.5">
+                      <span
+                        className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors ${
+                          openClawHeartbeatEnabled
+                            ? 'bg-primary-muted text-primary'
+                            : 'bg-surface-raised text-secondary'
+                        }`}
+                      >
+                        <SignalIcon className="h-5 w-5" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <h4 className="min-w-0 text-sm font-medium leading-5 text-foreground">
+                            {i18nService.t('openClawHeartbeatEnabled')}
+                          </h4>
+                          <SettingsSwitch
+                            checked={openClawHeartbeatEnabled}
+                            label={i18nService.t('openClawHeartbeatEnabled')}
+                            onClick={() => {
+                              setOpenClawHeartbeatEnabled((prev) => !prev);
+                            }}
+                          />
+                        </div>
+                        <p className="mt-1.5 text-[13px] leading-5 text-secondary">
+                          {i18nService.t('openClawHeartbeatEnabledDescription')}
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </section>
 
